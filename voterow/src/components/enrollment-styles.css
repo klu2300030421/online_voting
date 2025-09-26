@@ -1,0 +1,23 @@
+.status-message {
+  font-size: 0.8rem;
+  margin: 5px 0;
+  font-style: italic;
+  color: #666;
+}
+
+.status.pending {
+  background-color: #ffc107;
+  color: #212529;
+}
+
+.status.approved {
+  background-color: #28a745;
+  color: white;
+}
+
+.status.rejected {
+  background-color: #dc3545;
+  color: white;
+}
+
+/* Add to existing ParticipantDashboard.css */

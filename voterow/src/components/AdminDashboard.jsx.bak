@@ -1,0 +1,1835 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { 
+  FaPlus, FaEdit, FaToggleOn, FaToggleOff, FaTrash, FaUsers, FaUserTie, 
+  FaLock, FaVoteYea, FaCog, FaChartBar, FaBell, FaShieldAlt, FaFileExport,
+  FaUserCheck, FaCalendarAlt, FaPlay, FaStop, FaSearch, FaUpload, FaDownload,
+  FaEye, FaEnvelope, FaSms, FaDatabase, FaKey, FaUserShield, FaHome, FaUser, FaTimes
+} from 'react-icons/fa';
+import './AdminDashboard.css';
+
+const AdminDashboard = ({ user }) => {
+  // Guard clause for undefined user
+  if (!user) {
+    return (
+      <div className="admin-dashboard">
+        <div className="loading-message">
+          <p>Loading admin data...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const [activeTab, setActiveTab] = useState('home');
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState({
+    overview: {},
+    users: [],
+    voters: [],
+    candidates: [],
+    elections: [],
+    results: [],
+    auditLogs: [],
+    notifications: [],
+    reports: [],
+    settings: {}
+  });
+
+  // Election management state
+  const [showElectionModal, setShowElectionModal] = useState(false);
+  const [showEnrollmentRequestsModal, setShowEnrollmentRequestsModal] = useState(false);
+  const [currentElectionId, setCurrentElectionId] = useState(null);
+  const [enrollmentRequests, setEnrollmentRequests] = useState([]);
+  const [editingElection, setEditingElection] = useState(null);
+  const [electionForm, setElectionForm] = useState({
+    title: '',
+    description: '',
+    startDate: '',
+    endDate: '',
+    status: 'SCHEDULED'
+  });
+
+  // Navigation tabs for all admin modules
+  const tabs = [
+    { id: 'home', label: 'Home', icon: FaHome },
+    { id: 'profile', label: 'Profile', icon: FaUser },
+    { id: 'overview', label: 'Overview', icon: FaChartBar },
+    { id: 'auth', label: 'Authentication & Security', icon: FaLock },
+    { id: 'voters', label: 'Voter Management', icon: FaUsers },
+    { id: 'candidates', label: 'Candidate Management', icon: FaUserTie },
+    { id: 'elections', label: 'Election Management', icon: FaVoteYea },
+    { id: 'voting', label: 'Voting Process Control', icon: FaPlay },
+    { id: 'results', label: 'Results & Analytics', icon: FaChartBar },
+    { id: 'security', label: 'Security & Audit', icon: FaShieldAlt },
+    { id: 'notifications', label: 'Communications', icon: FaBell },
+    { id: 'reports', label: 'Reports & Export', icon: FaFileExport },
+    { id: 'settings', label: 'System Settings', icon: FaCog }
+  ];
+
+  // API call functions
+  const apiCall = async (endpoint, options = {}) => {
+    try {
+      console.log(`AdminDashboard: Making API call to ${endpoint}`);
+      // Add cache-busting parameter to avoid cached responses
+      const cacheBuster = `?_cb=${Date.now()}`;
+      const response = await fetch(`http://localhost:8081/api/admin${endpoint}${cacheBuster}`, {
+        ...options,
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache, no-store',
+          'Pragma': 'no-cache',
+          ...options.headers
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log(`AdminDashboard: API call to ${endpoint} successful:`, data);
+        return data;
+      } else {
+        console.error(`AdminDashboard: API endpoint ${endpoint} returned status ${response.status}`);
+        return null; // Return null to use fallback data
+      }
+    } catch (error) {
+      console.error(`AdminDashboard: API Error for ${endpoint}:`, error.message);
+      return null; // Return null to use fallback data
+    }
+  };
+
+  // Load data based on active tab
+  useEffect(() => {
+    // Only load data for tabs that need it, provide fallbacks for missing APIs
+    loadTabData();
+    
+    // If we're on the elections tab, set up polling to keep data fresh from backend
+    let refreshInterval;
+    if (activeTab === 'elections') {
+      refreshInterval = setInterval(() => {
+        console.log("AdminDashboard: Refreshing elections data from backend");
+        loadElections();
+      }, 5000); // Check every 5 seconds
+    }
+    
+    // Cleanup on tab change or unmount
+    return () => {
+      if (refreshInterval) {
+        clearInterval(refreshInterval);
+      }
+    };
+  }, [activeTab]);
+
+  // Load elections from API, only fallback to localStorage if needed
+  const loadElections = async () => {
+    try {
+      // First try to get elections from the API (primary source of truth)
+      const apiElections = await apiCall('/elections');
+      
+      // If API call was successful, use that data exclusively
+      if (apiElections) {
+        console.log('AdminDashboard: Successfully loaded elections from API:', apiElections);
+        
+        // Process the elections data
+        const processedElections = apiElections.map(election => ({
+          ...election,
+          candidateCount: election.participants ? election.participants.length : 0
+        }));
+        
+        // Update the component state
+        setData(prev => ({ ...prev, elections: processedElections }));
+        
+        // Cache the data in localStorage for offline functionality
+        localStorage.setItem('voterow_elections', JSON.stringify(processedElections));
+        
+        return processedElections;
+      } 
+      
+      // If API call failed, fall back to localStorage
+      console.log('AdminDashboard: API call failed, falling back to localStorage');
+      const localElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
+      
+      const processedLocalElections = localElections.map(election => ({
+        ...election,
+        candidateCount: election.participants ? election.participants.length : 0
+      }));
+      
+      console.log('AdminDashboard: Loading elections from localStorage:', processedLocalElections);
+      setData(prev => ({ ...prev, elections: processedLocalElections }));
+      
+      return processedLocalElections;
+    } catch (error) {
+      console.error('Error loading elections:', error);
+      return [];
+    }
+  };
+  
+  const loadTabData = async () => {
+    try {
+      switch (activeTab) {
+        case 'overview':
+          // Try to load overview, fall back to mock data
+          const overview = await apiCall('/dashboard-overview') || {
+            totalElections: 5,
+            totalVoters: 1247,
+            totalCandidates: 15,
+            activeElections: 2,
+            recentActivity: [
+              { id: 1, action: "New voter registered", user: "John Doe", timestamp: new Date().toISOString() },
+              { id: 2, action: "Election created", user: "Admin", timestamp: new Date(Date.now() - 300000).toISOString() }
+            ]
+          };
+          setData(prev => ({ ...prev, overview }));
+          break;
+        case 'voters':
+          const voters = await apiCall('/voters') || [
+            { id: 1, name: "John Doe", email: "john@example.com", status: "Active", registeredAt: "2024-01-15" },
+            { id: 2, name: "Jane Smith", email: "jane@example.com", status: "Active", registeredAt: "2024-01-20" }
+          ];
+          setData(prev => ({ ...prev, voters }));
+          break;
+        case 'candidates':
+          const candidates = await apiCall('/candidates') || [
+            { id: 1, name: "Alice Johnson", party: "Progressive Party", status: "Approved", appliedAt: "2024-01-10" },
+            { id: 2, name: "Bob Wilson", party: "Unity Party", status: "Pending", appliedAt: "2024-01-12" }
+          ];
+          setData(prev => ({ ...prev, candidates }));
+          break;
+        case 'elections':
+          await loadElections();
+          break;
+        case 'security':
+          const auditLogs = await apiCall('/security-audit') || [
+            { id: 1, event: "Successful login", user: "admin", timestamp: "2024-03-02 09:15", ip: "192.168.1.100" },
+            { id: 2, event: "Failed login attempt", user: "unknown", timestamp: "2024-03-02 08:45", ip: "10.0.0.50" }
+          ];
+          setData(prev => ({ ...prev, auditLogs }));
+          break;
+        case 'settings':
+          const settings = await apiCall('/settings/system-config') || {};
+          setData(prev => ({ ...prev, settings }));
+          break;
+      }
+    } catch (error) {
+      console.log('Using fallback data due to API unavailability');
+      // Provide fallback data when backend is not available
+      setData(prev => ({ 
+        ...prev, 
+        overview: {
+          totalElections: 5,
+          totalVoters: 1247,
+          totalCandidates: 15,
+          activeElections: 2
+        }
+      }));
+    }
+  };
+
+  // Election form handlers - memoized to prevent re-renders
+  const handleFormChange = useCallback((field, value) => {
+    setElectionForm(prev => ({
+      ...prev,
+      [field]: value
+    }));
+  }, []);
+
+  // Election management functions - memoized to prevent re-renders
+  const handleCreateElection = useCallback(() => {
+    setEditingElection(null);
+    setElectionForm({
+      title: '',
+      description: '',
+      startDate: '',
+      endDate: '',
+      status: 'SCHEDULED'
+    });
+    setShowElectionModal(true);
+  }, []);
+
+  const handleEditElection = useCallback((election) => {
+    setEditingElection(election);
+    setElectionForm({
+      title: election.title,
+      description: election.description || '',
+      startDate: election.startDate ? election.startDate.split('T')[0] : '',
+      endDate: election.endDate ? election.endDate.split('T')[0] : '',
+      status: election.status
+    });
+    setShowElectionModal(true);
+  }, []);
+
+  const handleSaveElection = useCallback(async () => {
+    try {
+      // Validate form
+      if (!electionForm.title || !electionForm.startDate || !electionForm.endDate) {
+        alert('Please fill in all required fields');
+        return;
+      }
+      
+      let apiSuccess = false;
+      
+      if (editingElection) {
+        // Always try to update via API first
+        try {
+          const apiResponse = await apiCall(`/elections/${editingElection.id}`, {
+            method: 'PUT',
+            body: JSON.stringify(electionForm)
+          });
+          
+          if (apiResponse) {
+            console.log('AdminDashboard: Successfully updated election via API');
+            apiSuccess = true;
+          }
+        } catch (apiError) {
+          console.log('AdminDashboard: API update failed:', apiError);
+        }
+        
+        // Only update localStorage if API call failed
+        if (!apiSuccess) {
+          console.log('AdminDashboard: Falling back to localStorage for election update');
+          // Get existing elections from localStorage
+          const existingElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
+          
+          // Update existing election in localStorage
+          const updatedElections = existingElections.map(e => 
+            e.id === editingElection.id 
+              ? { 
+                  ...e, 
+                  title: electionForm.title,
+                  description: electionForm.description,
+                  startDate: electionForm.startDate + 'T09:00:00+05:30',
+                  endDate: electionForm.endDate + 'T17:00:00+05:30',
+                  status: electionForm.status
+                }
+              : e
+          );
+          localStorage.setItem('voterow_elections', JSON.stringify(updatedElections));
+          
+          // Update local state
+          setData(prev => ({
+            ...prev,
+            elections: prev.elections.map(e => 
+              e.id === editingElection.id 
+                ? { 
+                    ...e, 
+                    title: electionForm.title,
+                    description: electionForm.description,
+                    startDate: electionForm.startDate,
+                    endDate: electionForm.endDate,
+                    status: electionForm.status
+                  }
+                : e
+            )
+          }));
+        }
+      } else {
+        // Always try to create via API first
+        try {
+          const apiResponse = await apiCall('/elections', {
+            method: 'POST',
+            body: JSON.stringify(electionForm)
+          });
+          
+          if (apiResponse) {
+            console.log('AdminDashboard: Successfully created election via API');
+            apiSuccess = true;
+          }
+        } catch (apiError) {
+          console.log('AdminDashboard: API creation failed:', apiError);
+        }
+        
+        // Only use localStorage if API call failed
+        if (!apiSuccess) {
+          console.log('AdminDashboard: Falling back to localStorage for election creation');
+          // Get existing elections from localStorage
+          const existingElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
+          
+          // Create new election
+          const newElection = {
+            id: Math.max(...existingElections.map(e => e.id || 0), 0) + 1,
+            title: electionForm.title,
+            description: electionForm.description,
+            startDate: electionForm.startDate + 'T09:00:00+05:30',
+            endDate: electionForm.endDate + 'T17:00:00+05:30',
+            status: electionForm.status,
+            participants: [],
+            enrollmentRequests: [],
+            voters: [], // Empty voters array means all voters can participate
+            votes: {},
+            candidateCount: 0
+          };
+          
+          const updatedElections = [...existingElections, newElection];
+          localStorage.setItem('voterow_elections', JSON.stringify(updatedElections));
+          
+          // Update local state
+          setData(prev => ({
+            ...prev,
+            elections: [...prev.elections, newElection]
+          }));
+        }
+      }
+      
+      setShowElectionModal(false);
+      alert(editingElection ? 'Election updated successfully!' : 'Election created successfully!');
+      
+      // Reload elections data and ensure localStorage is updated
+      await loadElections();
+    } catch (error) {
+      console.error('Error saving election:', error);
+      alert('Error saving election. Please try again.');
+    }
+  }, [electionForm, editingElection, loadElections]);
+
+  const handleStartElection = useCallback(async (election) => {
+    try {
+      // Try to start via API first
+      try {
+        await apiCall(`/elections/${election.id}/start`, {
+          method: 'POST'
+        });
+      } catch (apiError) {
+        console.log('API start failed, using localStorage');
+      }
+      
+      const existingElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
+      const updatedElections = existingElections.map(e => 
+        e.id === election.id ? { ...e, status: 'ONGOING' } : e
+      );
+      localStorage.setItem('voterow_elections', JSON.stringify(updatedElections));
+      
+      // Update local state
+      setData(prev => ({
+        ...prev,
+        elections: prev.elections.map(e => 
+          e.id === election.id ? { ...e, status: 'ONGOING' } : e
+        )
+      }));
+      
+      alert('Election started successfully!');
+    } catch (error) {
+      console.error('Error starting election:', error);
+      alert('Error starting election. Please try again.');
+    }
+  }, []);
+
+  const handleEndElection = useCallback(async (election) => {
+    try {
+      // Try to end via API first
+      try {
+        await apiCall(`/elections/${election.id}/end`, {
+          method: 'POST'
+        });
+      } catch (apiError) {
+        console.log('API end failed, using localStorage');
+      }
+      
+      const existingElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
+      const updatedElections = existingElections.map(e => 
+        e.id === election.id ? { ...e, status: 'COMPLETED' } : e
+      );
+      localStorage.setItem('voterow_elections', JSON.stringify(updatedElections));
+      
+      // Update local state
+      setData(prev => ({
+        ...prev,
+        elections: prev.elections.map(e => 
+          e.id === election.id ? { ...e, status: 'COMPLETED' } : e
+        )
+      }));
+      
+      alert('Election ended successfully!');
+    } catch (error) {
+      console.error('Error ending election:', error);
+      alert('Error ending election. Please try again.');
+    }
+  }, []);
+  
+  // View and manage enrollment requests
+  const viewEnrollmentRequests = (electionId) => {
+    const election = data.elections.find(e => e.id === electionId);
+    if (election) {
+      setCurrentElectionId(electionId);
+      setEnrollmentRequests(election.enrollmentRequests || []);
+      setShowEnrollmentRequestsModal(true);
+    }
+  };
+  
+  const handleEnrollmentRequest = (electionId, participantId, action) => {
+    const existingElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
+    const election = existingElections.find(e => e.id === electionId);
+    
+    if (!election) return;
+    
+    let updatedElections = existingElections;
+    
+    if (action === 'approve') {
+      // Update enrollment request status
+      updatedElections = existingElections.map(election => {
+        if (election.id === electionId) {
+          const updatedRequests = (election.enrollmentRequests || []).map(req => {
+            if (req.userId === participantId || req.participantId === participantId) {
+              return { ...req, status: 'APPROVED', actionDate: new Date().toISOString() };
+            }
+            return req;
+          });
+          
+          // Add to participants list if not already included
+          const participants = election.participants || [];
+          if (!participants.includes(participantId)) {
+            participants.push(participantId);
+          }
+          
+          return { 
+            ...election, 
+            enrollmentRequests: updatedRequests,
+            participants: participants,
+            candidateCount: participants.length
+          };
+        }
+        return election;
+      });
+    } else if (action === 'reject') {
+      // Update enrollment request status to rejected
+      updatedElections = existingElections.map(election => {
+        if (election.id === electionId) {
+          const updatedRequests = (election.enrollmentRequests || []).map(req => {
+            if (req.userId === participantId || req.participantId === participantId) {
+              return { ...req, status: 'REJECTED', actionDate: new Date().toISOString() };
+            }
+            return req;
+          });
+          
+          return { 
+            ...election, 
+            enrollmentRequests: updatedRequests 
+          };
+        }
+        return election;
+      });
+    }
+    
+    // Save to localStorage
+    localStorage.setItem('voterow_elections', JSON.stringify(updatedElections));
+    
+    // Update state
+    setData(prev => ({
+      ...prev,
+      elections: updatedElections
+    }));
+    
+    // Update enrollment requests list
+    const updatedElection = updatedElections.find(e => e.id === electionId);
+    setEnrollmentRequests(updatedElection?.enrollmentRequests || []);
+    
+    alert(`Candidate application ${action === 'approve' ? 'approved' : 'rejected'} successfully!`);
+  };
+
+  // Module 1: Authentication & Authorization Component
+  const AuthenticationModule = () => (
+    <div className="admin-module">
+      <h3 className="module-title"><FaLock /> Authentication & Authorization</h3>
+      <div className="module-content">
+        <div className="action-buttons">
+          <button className="btn btn-primary"><FaKey /> Enable 2FA</button>
+          <button className="btn btn-secondary"><FaUserShield /> Manage Admin Roles</button>
+          <button className="btn btn-info"><FaLock /> Security Settings</button>
+        </div>
+        <div className="info-cards">
+          <div className="info-card">
+            <h4>Super Admins</h4>
+            <p className="stat-number">2</p>
+          </div>
+          <div className="info-card">
+            <h4>Sub Admins</h4>
+            <p className="stat-number">5</p>
+          </div>
+          <div className="info-card">
+            <h4>2FA Enabled</h4>
+            <p className="stat-number">85%</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Module 2: Voter Management Component
+  const VoterManagementModule = () => {
+    // State for voter management
+    const [showAddVoterModal, setShowAddVoterModal] = useState(false);
+    const [showImportModal, setShowImportModal] = useState(false);
+    const [voterForm, setVoterForm] = useState({
+      fullName: '',
+      email: '',
+      age: '',
+      phone: ''
+    });
+    const [importFile, setImportFile] = useState(null);
+    
+    // Event handlers for voter management
+    const handleAddVoter = useCallback(() => {
+      console.log("Opening Add Voter modal");
+      setShowAddVoterModal(true);
+    }, []);
+    
+    const handleImportCSV = useCallback(() => {
+      console.log("Opening Import CSV modal");
+      setShowImportModal(true);
+    }, []);
+    
+    const handleVerifyVoters = useCallback(async () => {
+      console.log("Verifying voters");
+      setLoading(true);
+      try {
+        await apiCall('/voters/verify', {
+          method: 'POST'
+        });
+        loadData('voters');
+        alert("Voter verification process initiated successfully");
+      } catch (error) {
+        console.error("Error verifying voters:", error);
+        alert("Failed to verify voters. Please try again.");
+      } finally {
+        setLoading(false);
+      }
+    }, []);
+    
+    const handleExportList = useCallback(async () => {
+      console.log("Exporting voter list");
+      try {
+        const response = await fetch('http://localhost:8081/api/admin/voters/export', {
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        });
+        
+        if (response.ok) {
+          const blob = await response.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.style.display = 'none';
+          a.href = url;
+          a.download = 'voters.csv';
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+          alert("Voters list exported successfully");
+        } else {
+          alert("Failed to export voters list");
+        }
+      } catch (error) {
+        console.error("Error exporting voters:", error);
+        alert("Failed to export voters list. Please try again.");
+      }
+    }, []);
+    
+    return (
+    <div className="admin-module">
+      <h3 className="module-title"><FaUsers /> Voter Management</h3>
+      <div className="module-content">
+        <div className="action-buttons">
+          <button className="btn btn-primary" onClick={handleAddVoter}><FaPlus /> Add Voter</button>
+          <button className="btn btn-secondary" onClick={handleImportCSV}><FaUpload /> Import CSV</button>
+          <button className="btn btn-info" onClick={handleVerifyVoters}><FaUserCheck /> Verify Voters</button>
+          <button className="btn btn-success" onClick={handleExportList}><FaDownload /> Export List</button>
+        </div>
+        
+        {/* Add Voter Modal */}
+        {showAddVoterModal && (
+          <div className="modal-overlay">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h3>Add New Voter</h3>
+                <button className="close-btn" onClick={() => setShowAddVoterModal(false)}><FaTimes /></button>
+              </div>
+              <div className="modal-body">
+                <form onSubmit={(e) => {
+                  e.preventDefault();
+                  console.log("Submitting voter form", voterForm);
+                  // Add API call here
+                  apiCall('/voters', {
+                    method: 'POST',
+                    body: JSON.stringify(voterForm)
+                  }).then(() => {
+                    setShowAddVoterModal(false);
+                    loadData('voters');
+                    setVoterForm({ fullName: '', email: '', age: '', phone: '' });
+                  }).catch(err => {
+                    console.error("Error adding voter:", err);
+                    alert("Failed to add voter. Please try again.");
+                  });
+                }}>
+                  <div className="form-group">
+                    <label>Full Name</label>
+                    <input 
+                      type="text" 
+                      value={voterForm.fullName} 
+                      onChange={(e) => setVoterForm({...voterForm, fullName: e.target.value})} 
+                      required 
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Email</label>
+                    <input 
+                      type="email" 
+                      value={voterForm.email} 
+                      onChange={(e) => setVoterForm({...voterForm, email: e.target.value})} 
+                      required 
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Age</label>
+                    <input 
+                      type="number" 
+                      value={voterForm.age} 
+                      onChange={(e) => setVoterForm({...voterForm, age: e.target.value})} 
+                      required 
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Phone</label>
+                    <input 
+                      type="tel" 
+                      value={voterForm.phone} 
+                      onChange={(e) => setVoterForm({...voterForm, phone: e.target.value})} 
+                    />
+                  </div>
+                  <div className="form-actions">
+                    <button type="button" className="btn btn-secondary" onClick={() => setShowAddVoterModal(false)}>Cancel</button>
+                    <button type="submit" className="btn btn-primary">Add Voter</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* Import CSV Modal */}
+        {showImportModal && (
+          <div className="modal-overlay">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h3>Import Voters CSV</h3>
+                <button className="close-btn" onClick={() => setShowImportModal(false)}><FaTimes /></button>
+              </div>
+              <div className="modal-body">
+                <form onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!importFile) {
+                    alert("Please select a CSV file to import");
+                    return;
+                  }
+                  
+                  const formData = new FormData();
+                  formData.append('file', importFile);
+                  
+                  fetch('http://localhost:8081/api/admin/voters/import', {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'include'
+                  })
+                  .then(response => {
+                    if (response.ok) {
+                      setShowImportModal(false);
+                      loadData('voters');
+                      setImportFile(null);
+                      alert("Voters imported successfully");
+                    } else {
+                      alert("Failed to import voters");
+                    }
+                  })
+                  .catch(err => {
+                    console.error("Error importing voters:", err);
+                    alert("Failed to import voters. Please try again.");
+                  });
+                }}>
+                  <div className="form-group">
+                    <label>CSV File</label>
+                    <input 
+                      type="file" 
+                      accept=".csv" 
+                      onChange={(e) => setImportFile(e.target.files[0])} 
+                      required 
+                    />
+                  </div>
+                  <div className="form-group">
+                    <small>The CSV file should contain the following columns: fullName, email, age, phone</small>
+                  </div>
+                  <div className="form-actions">
+                    <button type="button" className="btn btn-secondary" onClick={() => setShowImportModal(false)}>Cancel</button>
+                    <button type="submit" className="btn btn-primary">Import</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        )}
+        <div className="data-table">
+          <h4>All Voters ({data.voters.length || 0})</h4>
+          {data.voters && data.voters.length > 0 ? (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Age</th>
+                  <th>Status</th>
+                  <th>Verified</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.voters.map(voter => (
+                  <tr key={voter.id}>
+                    <td>{voter.fullName}</td>
+                    <td>{voter.email}</td>
+                    <td>{voter.age}</td>
+                    <td>
+                      <span className={`status ${voter.isActive ? 'active' : 'inactive'}`}>
+                        {voter.isActive ? 'Active' : 'Inactive'}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`status ${voter.isVerified ? 'verified' : 'pending'}`}>
+                        {voter.isVerified ? 'Verified' : 'Pending'}
+                      </span>
+                    </td>
+                    <td>
+                      <button className="btn btn-sm btn-primary"><FaEdit /></button>
+                      <button className="btn btn-sm btn-warning"><FaToggleOn /></button>
+                      <button className="btn btn-sm btn-danger"><FaTrash /></button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p>No voters found.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+  };
+
+  // Module 3: Candidate Management Component
+  const CandidateManagementModule = () => (
+    <div className="admin-module">
+      <h3 className="module-title"><FaUserTie /> Candidate/Party Management</h3>
+      <div className="module-content">
+        <div className="action-buttons">
+          <button className="btn btn-primary"><FaPlus /> Add Candidate</button>
+          <button className="btn btn-secondary"><FaUpload /> Upload Symbols</button>
+          <button className="btn btn-info"><FaUserCheck /> Approve Candidates</button>
+        </div>
+        <div className="data-table">
+          <h4>All Candidates ({data.candidates.length || 0})</h4>
+          {data.candidates && data.candidates.length > 0 ? (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Party</th>
+                  <th>Election</th>
+                  <th>Status</th>
+                  <th>Symbol</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.candidates.map(candidate => (
+                  <tr key={candidate.id}>
+                    <td>{candidate.name}</td>
+                    <td>{candidate.party || 'Independent'}</td>
+                    <td>{candidate.election?.title || 'Not Assigned'}</td>
+                    <td>
+                      <span className={`status ${candidate.status?.toLowerCase()}`}>
+                        {candidate.status}
+                      </span>
+                    </td>
+                    <td>
+                      {candidate.symbolUrl ? 
+                        <img src={candidate.symbolUrl} alt="Symbol" className="symbol-image" /> : 
+                        'No Symbol'
+                      }
+                    </td>
+                    <td>
+                      <button className="btn btn-sm btn-primary"><FaEdit /></button>
+                      <button className="btn btn-sm btn-success"><FaUserCheck /></button>
+                      <button className="btn btn-sm btn-danger">Reject</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p>No candidates found.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  // Module 4: Election Management Component
+  const ElectionManagementModule = () => (
+    <div className="admin-module">
+      <h3 className="module-title"><FaVoteYea /> Election Management</h3>
+      <div className="module-content">
+        <div className="action-buttons">
+          <button className="btn btn-primary" onClick={handleCreateElection}>
+            <FaPlus /> Create Election
+          </button>
+          <button className="btn btn-secondary">
+            <FaCalendarAlt /> Schedule Elections
+          </button>
+          <button className="btn btn-info">
+            <FaUserTie /> Assign Candidates
+          </button>
+        </div>
+        <div className="data-table">
+          <h4>All Elections ({data.elections.length || 0})</h4>
+          {data.elections && data.elections.length > 0 ? (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Title</th>
+                  <th>Start Date</th>
+                  <th>End Date</th>
+                  <th>Status</th>
+                  <th>Candidates</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.elections.map(election => (
+                  <tr key={election.id}>
+                    <td>{election.title}</td>
+                    <td>{election.startDate ? new Date(election.startDate).toLocaleDateString() : 'Not Set'}</td>
+                    <td>{election.endDate ? new Date(election.endDate).toLocaleDateString() : 'Not Set'}</td>
+                    <td>
+                      <span className={`status ${election.status?.toLowerCase()}`}>
+                        {election.status}
+                      </span>
+                    </td>
+                    <td>{election.candidateCount || 0}</td>
+                    <td>
+                      <button 
+                        className="btn btn-sm btn-primary" 
+                        onClick={() => handleEditElection(election)}
+                        title="Edit Election"
+                      >
+                        <FaEdit />
+                      </button>
+                      <button 
+                        className="btn btn-sm btn-info" 
+                        onClick={() => viewEnrollmentRequests(election.id)}
+                        title="View Enrollment Requests"
+                      >
+                        <FaUserCheck />
+                      </button>
+                      <button 
+                        className="btn btn-sm btn-success" 
+                        onClick={() => handleStartElection(election)}
+                        disabled={election.status === 'ONGOING' || election.status === 'COMPLETED'}
+                        title="Start Election"
+                      >
+                        <FaPlay />
+                      </button>
+                      <button 
+                        className="btn btn-sm btn-danger" 
+                        onClick={() => handleEndElection(election)}
+                        disabled={election.status === 'COMPLETED' || election.status === 'SCHEDULED'}
+                        title="End Election"
+                      >
+                        <FaStop />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p>No elections found. <button className="btn btn-primary btn-sm" onClick={handleCreateElection}>Create your first election</button></p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  // Module 5: Voting Process Control Component
+  const VotingControlModule = () => (
+    <div className="admin-module">
+      <h3 className="module-title"><FaPlay /> Voting Process Control</h3>
+      <div className="module-content">
+        <div className="control-panel">
+          <div className="control-card">
+            <h4>Election Control</h4>
+            <div className="control-buttons">
+              <button className="btn btn-success btn-lg"><FaPlay /> Start Election</button>
+              <button className="btn btn-danger btn-lg"><FaStop /> Stop Election</button>
+            </div>
+          </div>
+          <div className="control-card">
+            <h4>Live Monitoring</h4>
+            <div className="live-stats">
+              <div className="stat-item">
+                <span className="stat-label">Active Voters:</span>
+                <span className="stat-value">156</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-label">Total Votes:</span>
+                <span className="stat-value">1,247</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-label">Turnout:</span>
+                <span className="stat-value">62.3%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="activity-feed">
+          <h4>Recent Activity</h4>
+          <div className="activity-list">
+            <div className="activity-item">Voter #1247 cast vote - 2 minutes ago</div>
+            <div className="activity-item">Voter #1246 cast vote - 3 minutes ago</div>
+            <div className="activity-item">Voter #1245 cast vote - 4 minutes ago</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Module 6: Results & Analytics Component
+  const ResultsModule = () => (
+    <div className="admin-module">
+      <h3 className="module-title"><FaChartBar /> Results Management & Analytics</h3>
+      <div className="module-content">
+        <div className="action-buttons">
+          <button className="btn btn-primary"><FaPlay /> Count Votes</button>
+          <button className="btn btn-success"><FaEye /> View Results</button>
+          <button className="btn btn-info"><FaFileExport /> Publish Results</button>
+          <button className="btn btn-secondary"><FaDownload /> Download Report</button>
+        </div>
+        <div className="results-overview">
+          <div className="result-card">
+            <h4>Election Results</h4>
+            <div className="result-stats">
+              <div className="stat">Total Votes: <strong>1,247</strong></div>
+              <div className="stat">Valid Votes: <strong>1,235</strong></div>
+              <div className="stat">Invalid Votes: <strong>12</strong></div>
+              <div className="stat">Turnout: <strong>62.3%</strong></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Module 7: Security & Audit Component
+  const SecurityModule = () => (
+    <div className="admin-module">
+      <h3 className="module-title"><FaShieldAlt /> Security & Audit System</h3>
+      <div className="module-content">
+        <div className="action-buttons">
+          <button className="btn btn-primary"><FaShieldAlt /> Encrypt Votes</button>
+          <button className="btn btn-warning"><FaSearch /> Fraud Detection</button>
+          <button className="btn btn-info"><FaDownload /> Export Audit Log</button>
+        </div>
+        <div className="security-stats">
+          <div className="security-card">
+            <h4>Security Status</h4>
+            <div className="security-item">
+              <span className="label">Vote Encryption:</span>
+              <span className="status active">Enabled</span>
+            </div>
+            <div className="security-item">
+              <span className="label">Audit Logging:</span>
+              <span className="status active">Active</span>
+            </div>
+            <div className="security-item">
+              <span className="label">Fraud Detection:</span>
+              <span className="status active">Monitoring</span>
+            </div>
+          </div>
+        </div>
+        <div className="audit-log">
+          <h4>Recent Audit Entries</h4>
+          {data.auditLogs && data.auditLogs.length > 0 ? (
+            <div className="log-entries">
+              {data.auditLogs.slice(0, 10).map(log => (
+                <div key={log.id} className="log-entry">
+                  <span className="log-time">{new Date(log.timestamp).toLocaleString()}</span>
+                  <span className="log-action">{log.action}</span>
+                  <span className="log-user">{log.user}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p>No audit logs available.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  // Module 8: Communication & Notifications Component
+  const CommunicationModule = () => (
+    <div className="admin-module">
+      <h3 className="module-title"><FaBell /> Communication & Notifications</h3>
+      <div className="module-content">
+        <div className="action-buttons">
+          <button className="btn btn-primary"><FaSms /> Send SMS</button>
+          <button className="btn btn-secondary"><FaEnvelope /> Send Email</button>
+          <button className="btn btn-info"><FaBell /> Broadcast Notification</button>
+        </div>
+        <div className="communication-tabs">
+          <div className="comm-tab active">
+            <h4>Send Notifications</h4>
+            <form className="notification-form">
+              <div className="form-group">
+                <label>Message Type:</label>
+                <select className="form-control">
+                  <option>SMS</option>
+                  <option>Email</option>
+                  <option>Both</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Recipients:</label>
+                <select className="form-control">
+                  <option>All Voters</option>
+                  <option>All Candidates</option>
+                  <option>Custom List</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Message:</label>
+                <textarea className="form-control" rows="4" placeholder="Enter your message..."></textarea>
+              </div>
+              <button type="submit" className="btn btn-primary">Send Notification</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Home Module Component
+  const HomeModule = () => (
+    <div className="admin-module">
+      <div className="content-header">
+        <h1 className="content-title">Welcome to VoteRow Admin Panel</h1>
+        <p className="content-subtitle">Comprehensive Election Management System</p>
+      </div>
+      <div className="module-content">
+        <div className="home-content">
+          <div className="admin-welcome-card">
+            <div className="welcome-icon">
+              <FaHome />
+            </div>
+            <div className="welcome-text">
+              <h3>Admin Dashboard</h3>
+              <p>Welcome to the VoteRow administration panel. Here you can manage all aspects of your election system with powerful tools and comprehensive controls.</p>
+            </div>
+          </div>
+          
+          <div className="feature-grid">
+            <div className="feature-card">
+              <FaUsers className="feature-icon" />
+              <h4>User Management</h4>
+              <p>Manage voters, candidates, and administrators with complete control over user permissions and verification processes.</p>
+            </div>
+            
+            <div className="feature-card">
+              <FaVoteYea className="feature-icon" />
+              <h4>Election Control</h4>
+              <p>Create, schedule, and monitor elections with real-time tracking and comprehensive management tools.</p>
+            </div>
+            
+            <div className="feature-card">
+              <FaChartBar className="feature-icon" />
+              <h4>Analytics & Reports</h4>
+              <p>Access detailed analytics, generate reports, and export data for comprehensive election analysis.</p>
+            </div>
+            
+            <div className="feature-card">
+              <FaShieldAlt className="feature-icon" />
+              <h4>Security & Audit</h4>
+              <p>Monitor system security, track user activities, and maintain comprehensive audit logs for transparency.</p>
+            </div>
+          </div>
+          
+          <div className="quick-actions">
+            <h4>Quick Actions</h4>
+            <div className="action-buttons">
+              <button className="btn btn-primary" onClick={() => setActiveTab('elections')}>
+                <FaPlus /> Create New Election
+              </button>
+              <button className="btn btn-success" onClick={() => setActiveTab('voters')}>
+                <FaUsers /> Manage Voters
+              </button>
+              <button className="btn btn-info" onClick={() => setActiveTab('overview')}>
+                <FaChartBar /> View Analytics
+              </button>
+              <button className="btn btn-warning" onClick={() => setActiveTab('security')}>
+                <FaShieldAlt /> Security Audit
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Profile Module Component
+  const ProfileModule = () => {
+    const [profile, setProfile] = useState({
+      fullName: user?.fullName || user?.username || 'Admin User',
+      email: user?.email || 'admin@voterow.com',
+      age: user?.age || '',
+      phoneNumber: user?.phoneNumber || '',
+      idProofNumber: user?.idProofNumber || '',
+      address: user?.address || '',
+      role: user?.userType === 'ADMIN' ? 'Super Administrator' : user?.userType || 'Administrator',
+      lastLogin: new Date().toLocaleString(),
+      accountCreated: user?.createdAt || '2024-01-15',
+      permissions: user?.userType === 'ADMIN' ? 
+        ['Full Access', 'User Management', 'Election Control', 'System Settings'] : 
+        ['Limited Access']
+    });
+
+    const [isEditing, setIsEditing] = useState(false);
+    const [editData, setEditData] = useState({ ...profile });
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState('');
+    const [success, setSuccess] = useState('');
+
+    // Update profile when user prop changes
+    useEffect(() => {
+      if (user) {
+        const updatedProfile = {
+          fullName: user.fullName || user.username || 'Admin User',
+          email: user.email || 'admin@voterow.com',
+          age: user.age || '',
+          phoneNumber: user.phoneNumber || '',
+          idProofNumber: user.idProofNumber || '',
+          address: user.address || '',
+          role: user.userType === 'ADMIN' ? 'Super Administrator' : user.userType || 'Administrator',
+          lastLogin: new Date().toLocaleString(),
+          accountCreated: user.createdAt || '2024-01-15',
+          permissions: user.userType === 'ADMIN' ? 
+            ['Full Access', 'User Management', 'Election Control', 'System Settings'] : 
+            ['Limited Access']
+        };
+        setProfile(updatedProfile);
+        setEditData(updatedProfile);
+      }
+    }, [user]);
+
+    const handleSave = async () => {
+      setIsLoading(true);
+      setError('');
+      setSuccess('');
+      
+      try {
+        const response = await fetch(`http://localhost:8081/api/auth/profile?email=${encodeURIComponent(user.email)}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            fullName: editData.fullName,
+            age: editData.age ? parseInt(editData.age) : null,
+            phoneNumber: editData.phoneNumber || null,
+            idProofNumber: editData.idProofNumber || null,
+            address: editData.address || null
+          }),
+        });
+
+        if (response.ok) {
+          const updatedUser = await response.json();
+          setProfile({
+            ...profile,
+            fullName: updatedUser.fullName,
+            age: updatedUser.age || '',
+            phoneNumber: updatedUser.phoneNumber || '',
+            idProofNumber: updatedUser.idProofNumber || '',
+            address: updatedUser.address || ''
+          });
+          setSuccess('Profile updated successfully!');
+          setIsEditing(false);
+          
+          // Update parent component user data if possible
+          if (window.updateUserProfile) {
+            window.updateUserProfile(updatedUser);
+          }
+        } else {
+          const errorText = await response.text();
+          setError(errorText || 'Failed to update profile');
+        }
+      } catch (err) {
+        setError('Network error. Please try again.');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    const handleCancel = () => {
+      setEditData({ ...profile });
+      setIsEditing(false);
+      setError('');
+      setSuccess('');
+    };
+
+    return (
+      <div className="admin-module">
+        <div className="content-header">
+          <h1 className="content-title">Administrator Profile</h1>
+          <p className="content-subtitle">Manage your account settings and information</p>
+        </div>
+        <div className="module-content">
+          {error && <div className="alert alert-error">{error}</div>}
+          {success && <div className="alert alert-success">{success}</div>}
+          
+          <div className="profile-container">
+            <div className="profile-card">
+              <div className="profile-header">
+                <div className="profile-avatar">
+                  <FaUser />
+                </div>
+                <div className="profile-info">
+                  <h3>{profile.fullName}</h3>
+                  <p className="role-badge">{profile.role}</p>
+                </div>
+                <button 
+                  className="btn btn-secondary"
+                  onClick={() => setIsEditing(!isEditing)}
+                  disabled={isLoading}
+                >
+                  <FaEdit /> {isEditing ? 'Cancel' : 'Edit Profile'}
+                </button>
+              </div>
+              
+              <div className="profile-body">
+                <div className="profile-section">
+                  <h4>Personal Information</h4>
+                  <div className="info-grid">
+                    <div className="info-item">
+                      <label>Full Name *</label>
+                      {isEditing ? (
+                        <input 
+                          type="text" 
+                          value={editData.fullName}
+                          onChange={(e) => setEditData({...editData, fullName: e.target.value})}
+                          required
+                        />
+                      ) : (
+                        <span>{profile.fullName}</span>
+                      )}
+                    </div>
+                    <div className="info-item">
+                      <label>Email</label>
+                      <span>{profile.email}</span>
+                    </div>
+                    <div className="info-item">
+                      <label>Age</label>
+                      {isEditing ? (
+                        <input 
+                          type="number" 
+                          value={editData.age}
+                          onChange={(e) => setEditData({...editData, age: e.target.value})}
+                          min="18"
+                          max="100"
+                        />
+                      ) : (
+                        <span>{profile.age || 'Not specified'}</span>
+                      )}
+                    </div>
+                    <div className="info-item">
+                      <label>Phone Number</label>
+                      {isEditing ? (
+                        <input 
+                          type="tel" 
+                          value={editData.phoneNumber}
+                          onChange={(e) => setEditData({...editData, phoneNumber: e.target.value})}
+                          maxLength="15"
+                        />
+                      ) : (
+                        <span>{profile.phoneNumber || 'Not specified'}</span>
+                      )}
+                    </div>
+                    <div className="info-item">
+                      <label>ID Proof Number</label>
+                      {isEditing ? (
+                        <input 
+                          type="text" 
+                          value={editData.idProofNumber}
+                          onChange={(e) => setEditData({...editData, idProofNumber: e.target.value})}
+                          maxLength="20"
+                        />
+                      ) : (
+                        <span>{profile.idProofNumber || 'Not specified'}</span>
+                      )}
+                    </div>
+                    <div className="info-item">
+                      <label>Address</label>
+                      {isEditing ? (
+                        <textarea 
+                          value={editData.address}
+                          onChange={(e) => setEditData({...editData, address: e.target.value})}
+                          maxLength="500"
+                          rows="3"
+                        />
+                      ) : (
+                        <span>{profile.address || 'Not specified'}</span>
+                      )}
+                    </div>
+                    <div className="info-item">
+                      <label>Role</label>
+                      <span>{profile.role}</span>
+                    </div>
+                    <div className="info-item">
+                      <label>Last Login</label>
+                      <span>{profile.lastLogin}</span>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="profile-section">
+                  <h4>Account Details</h4>
+                  <div className="info-grid">
+                    <div className="info-item">
+                      <label>Account Created</label>
+                      <span>{profile.accountCreated}</span>
+                    </div>
+                    <div className="info-item">
+                      <label>Permissions</label>
+                      <div className="permission-tags">
+                        {profile.permissions.map((permission, index) => (
+                          <span key={index} className="permission-tag">{permission}</span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                {isEditing && (
+                  <div className="profile-actions">
+                    <button 
+                      className="btn btn-primary" 
+                      onClick={handleSave}
+                      disabled={isLoading || !editData.fullName.trim()}
+                    >
+                      {isLoading ? 'Saving...' : 'Save Changes'}
+                    </button>
+                    <button 
+                      className="btn btn-secondary" 
+                      onClick={handleCancel}
+                      disabled={isLoading}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+            
+            <div className="security-card">
+              <h4><FaShieldAlt /> Security Settings</h4>
+              <div className="security-options">
+                <div className="security-item">
+                  <div className="security-info">
+                    <h5>Two-Factor Authentication</h5>
+                    <p>Add an extra layer of security to your account</p>
+                  </div>
+                  <button className="btn btn-primary">Enable 2FA</button>
+                </div>
+                <div className="security-item">
+                  <div className="security-info">
+                    <h5>Change Password</h5>
+                    <p>Update your account password</p>
+                  </div>
+                  <button className="btn btn-warning">Change Password</button>
+                </div>
+                <div className="security-item">
+                  <div className="security-info">
+                    <h5>Login Sessions</h5>
+                    <p>Manage active login sessions</p>
+                  </div>
+                  <button className="btn btn-info">View Sessions</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Module 9: Dashboard & Reports Component
+  const DashboardOverviewModule = () => (
+    <div className="admin-module">
+      <div className="content-header">
+        <h1 className="content-title">Welcome, {user?.fullName || user?.username || 'Admin'}!</h1>
+        <p className="content-subtitle">Your VoteRow Administration Dashboard</p>
+      </div>
+      <div className="module-content">
+        <div className="overview-stats">
+          <div className="stat-card primary">
+            <div className="stat-icon-wrapper">
+              <FaVoteYea className="stat-icon" />
+            </div>
+            <div className="stat-info">
+              <h3>{data.overview.totalElections || 5}</h3>
+              <p>Total Elections</p>
+            </div>
+          </div>
+          <div className="stat-card success">
+            <div className="stat-icon-wrapper">
+              <FaUsers className="stat-icon" />
+            </div>
+            <div className="stat-info">
+              <h3>{data.overview.totalVoters || 1247}</h3>
+              <p>Registered Voters</p>
+            </div>
+          </div>
+          <div className="stat-card warning">
+            <div className="stat-icon-wrapper">
+              <FaUserTie className="stat-icon" />
+            </div>
+            <div className="stat-info">
+              <h3>{data.overview.totalCandidates || 15}</h3>
+              <p>Candidates</p>
+            </div>
+          </div>
+          <div className="stat-card info">
+            <div className="stat-icon-wrapper">
+              <FaPlay className="stat-icon" />
+            </div>
+            <div className="stat-info">
+              <h3>{data.overview.activeElections || 2}</h3>
+              <p>Active Elections</p>
+            </div>
+          </div>
+        </div>
+        
+        <div className="dashboard-grid">
+          <div className="chart-card">
+            <div className="card-header">
+              <h4><FaChartBar /> Recent Activity</h4>
+            </div>
+            <div className="activity-list">
+              {(data.overview.recentActivity || [
+                { id: 1, action: "New voter registered", user: "John Doe", timestamp: new Date().toISOString() },
+                { id: 2, action: "Election created", user: "Admin", timestamp: new Date(Date.now() - 300000).toISOString() },
+                { id: 3, action: "Vote cast", user: "Jane Smith", timestamp: new Date(Date.now() - 600000).toISOString() }
+              ]).map(activity => (
+                <div key={activity.id} className="activity-item">
+                  <div className="activity-icon">
+                    <FaBell />
+                  </div>
+                  <div className="activity-content">
+                    <p className="activity-action">{activity.action}</p>
+                    <p className="activity-meta">{activity.user} - {new Date(activity.timestamp).toLocaleString()}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          
+          <div className="chart-card">
+            <div className="card-header">
+              <h4><FaChartBar /> Quick Actions</h4>
+            </div>
+            <div className="quick-actions">
+              <button className="btn btn-primary" onClick={() => setActiveTab('elections')}>
+                <FaPlus /> Create Election
+              </button>
+              <button className="btn btn-success" onClick={() => setActiveTab('voters')}>
+                <FaUsers /> Manage Voters
+              </button>
+              <button className="btn btn-info" onClick={() => setActiveTab('candidates')}>
+                <FaUserTie /> Review Candidates
+              </button>
+              <button className="btn btn-warning" onClick={() => setActiveTab('reports')}>
+                <FaFileExport /> Generate Reports
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Module 10: System Settings Component
+  const SystemSettingsModule = () => (
+    <div className="admin-module">
+      <h3 className="module-title"><FaCog /> System Settings & Configuration</h3>
+      <div className="module-content">
+        <div className="settings-tabs">
+          <div className="settings-section">
+            <h4>Admin Users</h4>
+            <div className="action-buttons">
+              <button className="btn btn-primary"><FaPlus /> Add Admin</button>
+              <button className="btn btn-secondary"><FaUserShield /> Manage Permissions</button>
+            </div>
+          </div>
+          <div className="settings-section">
+            <h4>System Configuration</h4>
+            <form className="config-form">
+              <div className="form-group">
+                <label>Timezone:</label>
+                <select className="form-control">
+                  <option>UTC</option>
+                  <option>Asia/Kolkata</option>
+                  <option>America/New_York</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Max Voting Hours:</label>
+                <input type="number" className="form-control" defaultValue="24" />
+              </div>
+              <div className="form-group">
+                <label>
+                  <input type="checkbox" /> Enable Voter Verification
+                </label>
+              </div>
+              <div className="form-group">
+                <label>
+                  <input type="checkbox" /> Enable Audit Logging
+                </label>
+              </div>
+              <button type="submit" className="btn btn-primary">Save Configuration</button>
+            </form>
+          </div>
+          <div className="settings-section">
+            <h4>Backup & Restore</h4>
+            <div className="backup-controls">
+              <button className="btn btn-success"><FaDatabase /> Create Backup</button>
+              <button className="btn btn-warning"><FaUpload /> Restore Backup</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Render the appropriate module based on active tab
+  const renderActiveModule = () => {
+    switch (activeTab) {
+      case 'home': return <HomeModule />;
+      case 'profile': return <ProfileModule />;
+      case 'overview': return <DashboardOverviewModule />;
+      case 'auth': return <AuthenticationModule />;
+      case 'voters': return <VoterManagementModule />;
+      case 'candidates': return <CandidateManagementModule />;
+      case 'elections': return <ElectionManagementModule />;
+      case 'voting': return <VotingControlModule />;
+      case 'results': return <ResultsModule />;
+      case 'security': return <SecurityModule />;
+      case 'notifications': return <CommunicationModule />;
+      case 'settings': return <SystemSettingsModule />;
+      default: return <HomeModule />;
+    }
+  };
+
+  // Election Modal Component - memoized to prevent unnecessary re-renders
+  const ElectionModal = useCallback(() => {
+    if (!showElectionModal) return null;
+    
+    return (
+      <div className="modal-overlay" onClick={() => setShowElectionModal(false)}>
+        <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header">
+            <h3>{editingElection ? 'Edit Election' : 'Create New Election'}</h3>
+            <button className="modal-close" onClick={() => setShowElectionModal(false)}>
+              <FaTimes />
+            </button>
+          </div>
+          <div className="modal-body">
+            <div className="form-group">
+              <label>Election Title</label>
+              <input
+                key="election-title"
+                type="text"
+                className="form-control"
+                value={electionForm.title}
+                onChange={(e) => handleFormChange('title', e.target.value)}
+                placeholder="Enter election title"
+                autoFocus
+              />
+            </div>
+            <div className="form-group">
+              <label>Description</label>
+              <textarea
+                key="election-description"
+                className="form-control"
+                value={electionForm.description}
+                onChange={(e) => handleFormChange('description', e.target.value)}
+                placeholder="Enter election description"
+                rows="3"
+              />
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Start Date</label>
+                <input
+                  key="election-start-date"
+                  type="date"
+                  className="form-control"
+                  value={electionForm.startDate}
+                  onChange={(e) => handleFormChange('startDate', e.target.value)}
+                />
+              </div>
+              <div className="form-group">
+                <label>End Date</label>
+                <input
+                  key="election-end-date"
+                  type="date"
+                  className="form-control"
+                  value={electionForm.endDate}
+                  onChange={(e) => handleFormChange('endDate', e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="form-group">
+              <label>Status</label>
+              <select
+                key="election-status"
+                className="form-control"
+                value={electionForm.status}
+                onChange={(e) => handleFormChange('status', e.target.value)}
+              >
+                <option value="SCHEDULED">Scheduled</option>
+                <option value="ONGOING">Ongoing</option>
+                <option value="COMPLETED">Completed</option>
+              </select>
+            </div>
+          </div>
+          <div className="modal-footer">
+            <button className="btn btn-secondary" onClick={() => setShowElectionModal(false)}>
+              Cancel
+            </button>
+            <button className="btn btn-primary" onClick={handleSaveElection}>
+              {editingElection ? 'Update Election' : 'Create Election'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }, [showElectionModal, electionForm, editingElection]);
+
+  return (
+    <div className="admin-dashboard">
+      {/* Sidebar Navigation */}
+      <div className="admin-sidebar">
+        <div className="sidebar-header">
+          <h1 className="sidebar-title">VoteRow Admin</h1>
+          <p className="sidebar-subtitle">System Management</p>
+        </div>
+        <nav className="sidebar-nav">
+          {tabs.map(tab => {
+            const IconComponent = tab.icon;
+            return (
+              <button
+                key={tab.id}
+                className={`nav-tab ${activeTab === tab.id ? 'active' : ''}`}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                <IconComponent className="tab-icon" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+
+      {/* Main Content */}
+      <div className="admin-content">
+        <div className="admin-content-area">
+          {loading && <div className="loading-spinner">Loading...</div>}
+          {renderActiveModule()}
+        </div>
+      </div>
+      
+      {/* Enrollment Requests Modal */}
+      {showEnrollmentRequestsModal && (
+        <div className="modal-overlay">
+          <div className="modal-container">
+            <div className="modal-header">
+              <h3>Enrollment Requests</h3>
+              <button 
+                className="close-btn"
+                onClick={() => setShowEnrollmentRequestsModal(false)}
+              >×</button>
+            </div>
+            <div className="modal-body">
+              {enrollmentRequests.length > 0 ? (
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Participant Name</th>
+                      <th>Email</th>
+                      <th>Request Date</th>
+                      <th>Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {enrollmentRequests.map((request, index) => (
+                      <tr key={index}>
+                        <td>{request.fullName || 'Unnamed Participant'}</td>
+                        <td>{request.email || 'No Email'}</td>
+                        <td>{new Date(request.requestDate || Date.now()).toLocaleString()}</td>
+                        <td>
+                          <span className={`status ${(request.status || 'PENDING').toLowerCase()}`}>
+                            {request.status || 'PENDING'}
+                          </span>
+                        </td>
+                        <td>
+                          {(!request.status || request.status === 'PENDING') && (
+                            <>
+                              <button 
+                                className="btn btn-sm btn-success"
+                                onClick={() => handleEnrollmentRequest(currentElectionId, request.userId || request.participantId, 'approve')}
+                              >
+                                Approve
+                              </button>
+                              <button 
+                                className="btn btn-sm btn-danger"
+                                onClick={() => handleEnrollmentRequest(currentElectionId, request.userId || request.participantId, 'reject')}
+                              >
+                                Reject
+                              </button>
+                            </>
+                          )}
+                          {request.status && request.status !== 'PENDING' && (
+                            <span className="status-text">No actions available</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="empty-state">No enrollment requests for this election.</p>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button 
+                className="btn btn-secondary"
+                onClick={() => setShowEnrollmentRequestsModal(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Election Modal */}
+      <ElectionModal />
+    </div>
+  );
+};
+
+export default AdminDashboard;

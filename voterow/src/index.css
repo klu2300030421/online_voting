@@ -1,0 +1,391 @@
+/* Basic Reset & Theming */
+:root {
+  --primary-color: #2a2a72;
+  --secondary-color: #009ffd;
+  --background-color: #f4f7fc;
+  --surface-color: #ffffff;
+  --text-color: #333;
+  --gray-color: #888;
+  --success-color: #28a745;
+  --danger-color: #dc3545;
+  --font-family: 'Poppins', sans-serif;
+  --border-radius: 8px;
+  --box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family);
+  background-color: var(--background-color);
+  color: var(--text-color);
+  line-height: 1.6;
+}
+
+/* App Layout */
+.app-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.main-content {
+  flex-grow: 1;
+  padding: 2rem;
+  max-width: 1200px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* Navbar */
+.navbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+  background-color: var(--surface-color);
+  box-shadow: var(--box-shadow);
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+}
+
+.nav-logo {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--primary-color);
+  text-decoration: none;
+}
+
+.nav-links {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+}
+
+.nav-links a,
+.nav-links button {
+  text-decoration: none;
+  color: var(--primary-color);
+  font-weight: 500;
+  font-size: 1rem;
+  padding: 0.5rem 1rem;
+  border-radius: var(--border-radius);
+  transition: all 0.3s ease;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.nav-links a:hover,
+.nav-links button:hover {
+  background-color: var(--background-color);
+}
+
+.nav-links .active {
+  color: var(--secondary-color);
+  font-weight: 700;
+}
+
+.welcome-message {
+  color: var(--primary-color);
+  font-weight: 600;
+  font-size: 1rem;
+  padding: 0.5rem 1rem;
+  background: linear-gradient(135deg, #667eea20, #764ba220);
+  border-radius: var(--border-radius);
+  border: 1px solid #667eea30;
+}
+
+/* Forms (Login/Signup/Profile) */
+.form-container {
+  max-width: 450px;
+  margin: 2rem auto;
+  padding: 2.5rem;
+  background-color: var(--surface-color);
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+  text-align: center;
+}
+
+.form-container h1 {
+  margin-bottom: 2rem;
+  color: var(--primary-color);
+}
+
+.form-group {
+  margin-bottom: 1.5rem;
+  text-align: left;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+  color: var(--gray-color);
+}
+
+.form-group input,
+.form-group select {
+  width: 100%;
+  padding: 0.8rem 1rem;
+  border-radius: var(--border-radius);
+  border: 1px solid #ddd;
+  font-size: 1rem;
+  transition: border-color 0.3s ease;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  outline: none;
+  border-color: var(--secondary-color);
+}
+
+.form-container p {
+  margin-top: 1.5rem;
+}
+
+/* Buttons */
+.btn {
+  padding: 0.8rem 1.5rem;
+  border: none;
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 600;
+  transition: all 0.3s ease;
+  display: inline-block;
+  text-align: center;
+}
+
+.btn-primary {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.btn-primary:hover {
+  opacity: 0.9;
+}
+
+.btn-secondary {
+  background-color: #eee;
+  color: var(--text-color);
+}
+
+.btn-danger {
+  background-color: var(--danger-color);
+  color: white;
+}
+
+/* Dashboard & Cards */
+.dashboard-header {
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 2px solid #eee;
+}
+
+.dashboard-header h1 {
+  color: var(--primary-color);
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.5rem;
+}
+
+.card {
+  background-color: var(--surface-color);
+  padding: 1.5rem;
+  border-radius: var(--border-radius);
+  box-shadow: var(--box-shadow);
+  transition: transform 0.3s ease;
+}
+
+.card:hover {
+    transform: translateY(-5px);
+}
+
+.card h3 {
+  color: var(--primary-color);
+  margin-bottom: 1rem;
+}
+
+.card p {
+  margin-bottom: 0.5rem;
+  color: var(--gray-color);
+}
+
+.card strong {
+  color: var(--text-color);
+}
+
+
+/* Admin Calendar */
+.admin-dashboard {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 2rem;
+    align-items: flex-start;
+}
+.calendar-container {
+    padding: 1rem;
+    background: var(--surface-color);
+    border-radius: var(--border-radius);
+    box-shadow: var(--box-shadow);
+}
+.election-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+/* New Admin Dashboard Layout */
+.admin-dashboard-layout {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 2rem;
+  align-items: flex-start;
+}
+
+.admin-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.user-list {
+  list-style: none;
+  padding-left: 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.user-list li {
+  padding: 0.5rem;
+  border-bottom: 1px solid #eee;
+}
+
+/* Modal for Voting */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.6);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 2000;
+}
+
+.modal-content {
+  background-color: white;
+  padding: 2rem;
+  border-radius: var(--border-radius);
+  box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+  width: 90%;
+  max-width: 500px;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 1rem;
+  margin-bottom: 1rem;
+}
+
+.modal-header h3 {
+  margin: 0;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  font-size: 2rem;
+  cursor: pointer;
+  color: var(--gray-color);
+}
+
+.candidate-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.candidate-card {
+  width: 100%;
+  padding: 1rem;
+  background: var(--background-color);
+  border: 1px solid #ddd;
+  border-radius: var(--border-radius);
+  text-align: center;
+  font-size: 1.1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.3s, color 0.3s;
+}
+
+.candidate-card:hover {
+  background-color: var(--primary-color);
+  color: white;
+}
+/* Election Status Styles */
+.status-active {
+  color: var(--success-color);
+  font-weight: 700;
+}
+.status-upcoming {
+  color: var(--secondary-color);
+  font-weight: 700;
+}
+.status-completed {
+  color: var(--danger-color);
+  font-weight: 700;
+}
+/* Styles for Admin Voter Management Modal */
+.card-actions {
+  margin-top: 1rem;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 1rem;
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid #eee;
+}
+
+.voter-selection-list {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid #ddd;
+  border-radius: var(--border-radius);
+  padding: 1rem;
+}
+
+.voter-checkbox {
+  display: block;
+  padding: 0.75rem;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.voter-checkbox:hover {
+  background-color: #f4f7fc;
+}
+
+.voter-checkbox input {
+  margin-right: 1rem;
+  transform: scale(1.2);
+}

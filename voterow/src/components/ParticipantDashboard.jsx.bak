@@ -1,0 +1,1241 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { 
+  FaUser, FaIdCard, FaVoteYea, FaTools, FaBell, FaChartBar, 
+  FaHome, FaUserEdit, FaImage, FaClipboardList, FaBullhorn, 
+  FaFileAlt, FaCalendarAlt, FaDownload, FaEye, FaUpload, 
+  FaCheckCircle, FaTimesCircle, FaClock, FaUsers
+} from 'react-icons/fa';
+import './ParticipantDashboard.css';
+
+const ParticipantDashboard = ({ user }) => {
+  // Guard clause for undefined user
+  if (!user) {
+    return (
+      <div className="participant-dashboard">
+        <div className="loading-message">
+          <p>Loading user data...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const [activeTab, setActiveTab] = useState('home');
+  const [loading, setLoading] = useState(false);
+  const [allElections, setAllElections] = useState([]);
+  const [enrollmentStatus, setEnrollmentStatus] = useState({});
+  
+  // Profile management state
+  const [profile, setProfile] = useState({
+    fullName: user?.fullName || '',
+    email: user?.email || '',
+    age: user?.age || '',
+    phoneNumber: user?.phoneNumber || '',
+    idProofNumber: user?.idProofNumber || '',
+    address: user?.address || '',
+    biography: '',
+    partyName: '',
+    partySymbol: ''
+  });
+  const [isProfileEditing, setIsProfileEditing] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState('');
+  const [profileSuccess, setProfileSuccess] = useState('');
+  
+  // Image handling states
+  const [profileImage, setProfileImage] = useState(null);
+  const [profileImagePreview, setProfileImagePreview] = useState('');
+  const [partySymbol, setPartySymbol] = useState(null);
+  const [partySymbolPreview, setPartySymbolPreview] = useState('');
+
+  // Navigation tabs for candidate modules
+  const tabs = [
+    { id: 'home', label: 'Home', icon: FaHome },
+    { id: 'profile', label: 'Profile Management', icon: FaUserEdit },
+    { id: 'authentication', label: 'Authentication', icon: FaIdCard },
+    { id: 'elections', label: 'Election Participation', icon: FaVoteYea },
+    { id: 'campaign', label: 'Campaign Tools', icon: FaTools },
+    { id: 'notifications', label: 'Notifications', icon: FaBell },
+    { id: 'results', label: 'Results & Reports', icon: FaChartBar }
+  ];
+
+  // Helper function to check election status based on current time and admin status
+  const getElectionStatus = (election) => {
+    // Handle admin-created elections with status field
+    if (election.status) {
+      switch (election.status.toUpperCase()) {
+        case 'ONGOING':
+          return 'Active';
+        case 'SCHEDULED':
+          return 'Upcoming';
+        case 'COMPLETED':
+          return 'Completed';
+        default:
+          return election.status;
+      }
+    }
+    
+    // Handle old format elections with date-based status
+    const now = new Date();
+    const startDate = new Date(election.startDate);
+    const endDate = new Date(election.endDate);
+
+    if (now < startDate) return 'Upcoming';
+    if (now >= startDate && now <= endDate) return 'Active';
+    return 'Completed';
+  };
+
+  // Reusable function to fetch elections from backend
+  const fetchElectionsFromBackend = async () => {
+    try {
+      console.log('ParticipantDashboard: Attempting to fetch elections from backend...');
+      // Always use backend API as the primary source of truth
+      const response = await fetch('http://localhost:8081/api/admin/elections');
+      console.log('ParticipantDashboard: Response status:', response.status);
+      
+      if (response.ok) {
+        const backendElections = await response.json();
+        console.log('ParticipantDashboard: Backend elections received:', backendElections);
+        // Transform backend elections to include participants array if missing
+        const electionsWithParticipants = backendElections.map(election => ({
+          ...election,
+          participants: election.participants || [],
+          enrollmentRequests: election.enrollmentRequests || []
+        }));
+        setAllElections(electionsWithParticipants);
+        
+        // Update localStorage for offline functionality, but API is source of truth
+        localStorage.setItem('voterow_elections', JSON.stringify(electionsWithParticipants));
+        return true;
+      } else {
+        console.error('ParticipantDashboard: Failed to fetch elections from backend, status:', response.status);
+        // Only fallback to localStorage if backend fails completely
+        const electionsFromStorage = JSON.parse(localStorage.getItem('voterow_elections')) || [];
+        console.log('ParticipantDashboard: Using localStorage elections as fallback:', electionsFromStorage);
+        
+        // Make sure all elections have enrollmentRequests array
+        const normalizedElections = electionsFromStorage.map(election => ({
+          ...election,
+          enrollmentRequests: election.enrollmentRequests || []
+        }));
+        
+        setAllElections(normalizedElections);
+        return false;
+      }
+    } catch (error) {
+      console.error('ParticipantDashboard: Error fetching elections:', error);
+      // Only fallback to localStorage if backend fails completely
+      const electionsFromStorage = JSON.parse(localStorage.getItem('voterow_elections')) || [];
+      
+      // Make sure all elections have enrollmentRequests array
+      const normalizedElections = electionsFromStorage.map(election => ({
+        ...election,
+        enrollmentRequests: election.enrollmentRequests || []
+      }));
+      
+      setAllElections(normalizedElections);
+      return false;
+    }
+  };
+
+  // Load elections on component mount
+  useEffect(() => {
+    fetchElectionsFromBackend();
+  }, []);
+        const normalizedElections = electionsFromStorage.map(election => ({
+          ...election,
+          enrollmentRequests: election.enrollmentRequests || []
+        }));
+        setAllElections(normalizedElections);
+      }
+    };
+
+    fetchElectionsFromBackend();
+  }, []);
+  
+  // Define fetchElectionsFromBackend function
+  const fetchElectionsFromBackend = async () => {
+    try {
+      console.log('ParticipantDashboard: Attempting to fetch elections from backend...');
+      // Add cache-busting parameter to prevent caching
+      const cacheBuster = `?_cb=${Date.now()}`;
+      // Always try the backend API first as source of truth
+      const response = await fetch(`http://localhost:8081/api/admin/elections${cacheBuster}`, {
+        headers: {
+          'Cache-Control': 'no-cache, no-store',
+          'Pragma': 'no-cache'
+        }
+      });
+      console.log('ParticipantDashboard: Response status:', response.status);
+      
+      if (response.ok) {
+        const backendElections = await response.json();
+        console.log('ParticipantDashboard: Backend elections received:', backendElections);
+        
+        // Transform backend elections to include required arrays if missing
+        const electionsWithParticipants = backendElections.map(election => ({
+          ...election,
+          participants: election.participants || [],
+          enrollmentRequests: election.enrollmentRequests || []
+        }));
+        
+        setAllElections(electionsWithParticipants);
+        return true;
+      } else {
+        console.error('ParticipantDashboard: Failed to fetch elections from backend, status:', response.status);
+        return false;
+      }
+    } catch (error) {
+      console.error('ParticipantDashboard: Error fetching elections from backend:', error);
+      return false;
+    }
+  };
+  
+  // Load elections on component mount
+  useEffect(() => {
+    const loadElections = async () => {
+      const backendSuccess = await fetchElectionsFromBackend();
+      
+      // Only fallback to localStorage if backend call failed
+      if (!backendSuccess) {
+        console.log('ParticipantDashboard: Using localStorage elections as fallback');
+        const electionsFromStorage = JSON.parse(localStorage.getItem('voterow_elections')) || [];
+        
+        const normalizedElections = electionsFromStorage.map(election => ({
+          ...election,
+          participants: election.participants || [],
+          enrollmentRequests: election.enrollmentRequests || []
+        }));
+        
+        setAllElections(normalizedElections);
+      }
+    };
+    
+    loadElections();
+    
+    // Set up a polling interval to refresh data from backend
+    const refreshInterval = setInterval(() => {
+      console.log("ParticipantDashboard: Refreshing elections data from backend");
+      fetchElectionsFromBackend();
+    }, 5000); // Check every 5 seconds
+    
+    // Cleanup on unmount
+    return () => {
+      clearInterval(refreshInterval);
+    };
+  }, []);
+  
+  // Setup enrollment status for the current user
+  useEffect(() => {
+    if (allElections.length > 0 && user) {
+      const status = {};
+      
+      allElections.forEach(election => {
+        // Check if user is already a participant (approved)
+        if (election.participants && election.participants.includes(user.id)) {
+          status[election.id] = { status: 'APPROVED', message: 'Your application has been approved' };
+        }
+        // Check if user has a pending enrollment request
+        else if (election.enrollmentRequests) {
+          const request = election.enrollmentRequests.find(req => req.userId === user.id);
+          if (request) {
+            status[election.id] = { 
+              status: request.status, 
+              message: request.status === 'PENDING' ? 
+                'Your application is pending approval' : 
+                request.status === 'REJECTED' ? 
+                'Your application was rejected' : 
+                'Application status: ' + request.status
+            };
+          }
+        }
+      });
+      
+      setEnrollmentStatus(status);
+    }
+  }, [allElections, user]);
+
+  const handleEnroll = async (electionId) => {
+    try {
+      // Update enrollment status for UI feedback first
+      setEnrollmentStatus(prev => ({
+        ...prev,
+        [electionId]: { status: 'PENDING', message: 'Application submitted, waiting for approval' }
+      }));
+      
+      // Always try to submit enrollment to the backend first
+      let apiSuccess = false;
+      
+      try {
+        const response = await fetch(`http://localhost:8081/api/elections/${electionId}/enroll`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            participantId: user.id,
+            userId: user.id,
+            email: user.email,
+            fullName: user.fullName,
+            timestamp: new Date().toISOString()
+          }),
+        });
+        
+        if (response.ok) {
+          console.log('ParticipantDashboard: Successfully enrolled via API');
+          apiSuccess = true;
+          
+          // Refresh elections from backend to get updated data
+          await fetchElectionsFromBackend();
+        }
+      } catch (error) {
+        console.error('ParticipantDashboard: Backend enrollment failed:', error);
+      }
+
+      // Only use localStorage if API call completely failed
+      if (!apiSuccess) {
+        console.log('ParticipantDashboard: API enrollment failed, using localStorage fallback');
+        
+        const updatedElections = allElections.map(election => {
+          if (election.id === electionId) {
+            // Initialize enrollment requests array if it doesn't exist
+            const enrollmentRequests = election.enrollmentRequests || [];
+            
+            // Add new enrollment request
+            const newRequest = {
+              participantId: user.id,
+              userId: user.id,
+              status: 'PENDING',
+              requestDate: new Date().toISOString(),
+              email: user.email,
+              fullName: user.fullName
+            };
+            
+            return { 
+              ...election, 
+              enrollmentRequests: [...enrollmentRequests, newRequest]
+            };
+          }
+          return election;
+        });
+
+        setAllElections(updatedElections);
+        localStorage.setItem('voterow_elections', JSON.stringify(updatedElections));
+      }
+      
+      alert('Your application has been submitted and is pending approval by an administrator.');
+    } catch (error) {
+      console.error('Error submitting enrollment:', error);
+      alert('There was an error submitting your application. Please try again.');
+      
+      // Reset status on error
+      setEnrollmentStatus(prev => ({
+        ...prev,
+        [electionId]: { status: 'ERROR', message: 'Application failed, please try again' }
+      }));
+    }
+  };
+
+  // Profile management functions
+  useEffect(() => {
+    if (user) {
+      setProfile({
+        fullName: user.fullName || '',
+        email: user.email || '',
+        age: user.age || '',
+        phoneNumber: user.phoneNumber || '',
+        idProofNumber: user.idProofNumber || '',
+        address: user.address || '',
+        biography: '',
+        partyName: '',
+        partySymbol: ''
+      });
+    }
+  }, [user]);
+
+  const handleProfileUpdate = useCallback((field, value) => {
+    setProfile(prev => ({ ...prev, [field]: value }));
+  }, []);
+
+  // Image handling functions
+  const handleImageUpload = useCallback((type, file) => {
+    if (!file) return;
+    
+    // Validate file size (2MB max)
+    if (file.size > 2 * 1024 * 1024) {
+      setProfileError('Image size should be less than 2MB');
+      return;
+    }
+    
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      setProfileError('Please upload a valid image file');
+      return;
+    }
+    
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (type === 'profile') {
+        setProfileImage(file);
+        setProfileImagePreview(reader.result);
+      } else if (type === 'party') {
+        setPartySymbol(file);
+        setPartySymbolPreview(reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+  }, []);
+
+  const saveProfile = async () => {
+    setProfileLoading(true);
+    setProfileError('');
+    setProfileSuccess('');
+    
+    try {
+      const response = await fetch(`http://localhost:8081/api/auth/profile?email=${encodeURIComponent(user.email)}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fullName: profile.fullName,
+          age: profile.age ? parseInt(profile.age) : null,
+          phoneNumber: profile.phoneNumber || null,
+          idProofNumber: profile.idProofNumber || null,
+          address: profile.address || null
+        }),
+      });
+
+      if (response.ok) {
+        const updatedUser = await response.json();
+        setProfile(prev => ({
+          ...prev,
+          fullName: updatedUser.fullName,
+          email: updatedUser.email,
+          age: updatedUser.age || '',
+          phoneNumber: updatedUser.phoneNumber || '',
+          idProofNumber: updatedUser.idProofNumber || '',
+          address: updatedUser.address || ''
+        }));
+        setProfileSuccess('Profile updated successfully!');
+        setIsProfileEditing(false);
+        
+        // Update parent component user data if possible
+        if (window.updateUserProfile) {
+          window.updateUserProfile(updatedUser);
+        }
+      } else {
+        const errorText = await response.text();
+        setProfileError(errorText || 'Failed to update profile');
+      }
+    } catch (err) {
+      setProfileError('Network error. Please try again.');
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+  
+  // Filter for elections this user is part of and upcoming ones they can join
+  const enrolledElections = allElections.filter(e => e.participants.includes(user.id));
+  const upcomingElections = allElections.filter(e => getElectionStatus(e) === 'Upcoming');
+
+  // Home Module Component
+  const HomeModule = () => (
+    <div className="candidate-module">
+      <div className="content-header">
+        <h1 className="content-title">Welcome, {user?.fullName || user?.username || 'Candidate'}!</h1>
+        <p className="content-subtitle">Your Candidate Portal Dashboard</p>
+      </div>
+      <div className="module-content">
+        <div className="candidate-welcome-card">
+          <div className="welcome-icon">
+            <FaUser />
+          </div>
+          <div className="welcome-text">
+            <h3>Candidate Dashboard</h3>
+            <p>Welcome to your candidate portal. Here you can manage your profile, participate in elections, run campaigns, and track your performance.</p>
+          </div>
+        </div>
+        
+        <div className="feature-grid">
+          <div className="feature-card" onClick={() => setActiveTab('profile')}>
+            <FaUserEdit className="feature-icon" />
+            <h4>Profile Management</h4>
+            <p>Update your personal details, upload photos, and manage your candidate profile information.</p>
+          </div>
+          
+          <div className="feature-card" onClick={() => setActiveTab('elections')}>
+            <FaVoteYea className="feature-icon" />
+            <h4>Election Participation</h4>
+            <p>Apply for elections, check eligibility, and monitor your application status.</p>
+          </div>
+          
+          <div className="feature-card" onClick={() => setActiveTab('campaign')}>
+            <FaTools className="feature-icon" />
+            <h4>Campaign Tools</h4>
+            <p>Upload manifestos, create announcements, and manage your campaign materials.</p>
+          </div>
+          
+          <div className="feature-card" onClick={() => setActiveTab('results')}>
+            <FaChartBar className="feature-icon" />
+            <h4>Results & Analytics</h4>
+            <p>View vote counts, track performance, and download detailed reports.</p>
+          </div>
+        </div>
+        
+        <div className="quick-stats">
+          <div className="stat-card">
+            <FaVoteYea className="stat-icon" />
+            <div className="stat-info">
+              <h4>{enrolledElections.length}</h4>
+              <p>Active Applications</p>
+            </div>
+          </div>
+          <div className="stat-card">
+            <FaBell className="stat-icon" />
+            <div className="stat-info">
+              <h4>5</h4>
+              <p>New Notifications</p>
+            </div>
+          </div>
+          <div className="stat-card">
+            <FaUsers className="stat-icon" />
+            <div className="stat-info">
+              <h4>1,247</h4>
+              <p>Total Supporters</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Authentication Module Component
+  const AuthenticationModule = () => (
+    <div className="candidate-module">
+      <div className="content-header">
+        <h1 className="content-title">Authentication & Verification</h1>
+        <p className="content-subtitle">Manage your login credentials and identity verification</p>
+      </div>
+      <div className="module-content">
+        <div className="auth-section">
+          <h4><FaIdCard /> Identity Verification</h4>
+          <div className="verification-status">
+            <div className="status-item verified">
+              <FaCheckCircle />
+              <span>Email Verified</span>
+            </div>
+            <div className="status-item verified">
+              <FaCheckCircle />
+              <span>Phone Verified</span>
+            </div>
+            <div className="status-item pending">
+              <FaClock />
+              <span>ID Document Pending</span>
+            </div>
+          </div>
+          
+          <div className="auth-actions">
+            <button className="btn btn-primary">
+              <FaUpload /> Upload ID Document
+            </button>
+            <button className="btn btn-secondary">
+              <FaEye /> View Verification Status
+            </button>
+          </div>
+        </div>
+
+        <div className="auth-section">
+          <h4><FaUser /> Login Credentials</h4>
+          <div className="credential-info">
+            <div className="info-item">
+              <label>Username</label>
+              <span>{user?.username || 'Not set'}</span>
+            </div>
+            <div className="info-item">
+              <label>Email</label>
+              <span>{user?.email || 'Not set'}</span>
+            </div>
+            <div className="info-item">
+              <label>Last Login</label>
+              <span>{new Date().toLocaleString()}</span>
+            </div>
+          </div>
+          
+          <div className="auth-actions">
+            <button className="btn btn-warning">Change Password</button>
+            <button className="btn btn-info">Enable 2FA</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Profile Management Module Component
+  const ProfileManagementModule = React.memo(() => {
+    return (
+    <div className="candidate-module">
+      <div className="content-header">
+        <h1 className="content-title">Profile Management</h1>
+        <p className="content-subtitle">Update your personal details and candidate information</p>
+      </div>
+      <div className="module-content">
+        {profileError && <div className="alert alert-error">{profileError}</div>}
+        {profileSuccess && <div className="alert alert-success">{profileSuccess}</div>}
+        
+        <div className="profile-sections">
+          <div className="profile-section">
+            <div className="section-header">
+              <h4><FaUser /> Personal Details</h4>
+              <button 
+                className="btn btn-secondary"
+                onClick={() => setIsProfileEditing(!isProfileEditing)}
+                disabled={profileLoading}
+              >
+                {isProfileEditing ? 'Cancel' : 'Edit Profile'}
+              </button>
+            </div>
+            <div className="form-grid">
+              <div className="form-group">
+                <label>Full Name *</label>
+                <input 
+                  type="text" 
+                  value={profile.fullName}
+                  onChange={(e) => handleProfileUpdate('fullName', e.target.value)}
+                  disabled={!isProfileEditing}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Email</label>
+                <input 
+                  type="email" 
+                  value={profile.email}
+                  disabled 
+                  title="Email cannot be changed"
+                />
+              </div>
+              <div className="form-group">
+                <label>Phone Number</label>
+                <input 
+                  type="tel" 
+                  value={profile.phoneNumber}
+                  onChange={(e) => handleProfileUpdate('phoneNumber', e.target.value)}
+                  disabled={!isProfileEditing}
+                  maxLength="15"
+                  placeholder="Enter phone number" 
+                />
+              </div>
+              <div className="form-group">
+                <label>Age</label>
+                <input 
+                  type="number" 
+                  value={profile.age}
+                  onChange={(e) => handleProfileUpdate('age', e.target.value)}
+                  disabled={!isProfileEditing}
+                  min="18" 
+                  max="100"
+                />
+              </div>
+              <div className="form-group">
+                <label>ID Proof Number</label>
+                <input 
+                  type="text" 
+                  value={profile.idProofNumber}
+                  onChange={(e) => handleProfileUpdate('idProofNumber', e.target.value)}
+                  disabled={!isProfileEditing}
+                  maxLength="20"
+                />
+              </div>
+              <div className="form-group">
+                <label>Address</label>
+                <textarea 
+                  value={profile.address}
+                  onChange={(e) => handleProfileUpdate('address', e.target.value)}
+                  disabled={!isProfileEditing}
+                  maxLength="500"
+                  rows="3"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="profile-section">
+            <h4><FaImage /> Photo & Media</h4>
+            <div className="media-upload">
+              <div className="upload-area">
+                {profileImagePreview ? (
+                  <div className="image-preview">
+                    <img src={profileImagePreview} alt="Profile preview" />
+                    {isProfileEditing && (
+                      <button 
+                        className="btn btn-danger btn-sm remove-image"
+                        onClick={() => {
+                          setProfileImage(null);
+                          setProfileImagePreview('');
+                        }}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <FaUpload />
+                    <p>Upload Profile Photo</p>
+                  </>
+                )}
+                <input 
+                  type="file" 
+                  accept="image/*" 
+                  disabled={!isProfileEditing}
+                  onChange={(e) => handleImageUpload('profile', e.target.files[0])}
+                  style={{ display: 'none' }}
+                  id="profile-image-upload"
+                />
+                {isProfileEditing && (
+                  <label htmlFor="profile-image-upload" className="btn btn-secondary">
+                    {profileImagePreview ? 'Change Photo' : 'Choose Photo'}
+                  </label>
+                )}
+              </div>
+              <div className="upload-guidelines">
+                <p>Guidelines:</p>
+                <ul>
+                  <li>Photo should be professional</li>
+                  <li>Maximum size: 2MB</li>
+                  <li>Format: JPG, PNG</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div className="profile-section">
+            <h4><FaFileAlt /> Biography</h4>
+            <textarea 
+              rows="6" 
+              value={profile.biography}
+              onChange={(e) => handleProfileUpdate('biography', e.target.value)}
+              disabled={!isProfileEditing}
+              placeholder="Write your biography, qualifications, and background..."
+              className="bio-textarea"
+            ></textarea>
+          </div>
+
+          <div className="profile-section">
+            <h4><FaImage /> Party Information</h4>
+            <div className="form-grid">
+              <div className="form-group">
+                <label>Party Name</label>
+                <input 
+                  type="text" 
+                  value={profile.partyName}
+                  onChange={(e) => handleProfileUpdate('partyName', e.target.value)}
+                  disabled={!isProfileEditing}
+                  placeholder="Enter party name or 'Independent'" 
+                />
+              </div>
+              <div className="form-group">
+                <label>Party Symbol</label>
+                <div className="symbol-upload">
+                  {partySymbolPreview ? (
+                    <div className="symbol-preview">
+                      <img src={partySymbolPreview} alt="Party symbol preview" />
+                      {isProfileEditing && (
+                        <button 
+                          className="btn btn-danger btn-sm remove-image"
+                          onClick={() => {
+                            setPartySymbol(null);
+                            setPartySymbolPreview('');
+                          }}
+                        >
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="symbol-placeholder">
+                      <FaImage />
+                      <span>No symbol uploaded</span>
+                    </div>
+                  )}
+                  <input 
+                    type="file" 
+                    accept="image/*" 
+                    disabled={!isProfileEditing}
+                    onChange={(e) => handleImageUpload('party', e.target.files[0])}
+                    style={{ display: 'none' }}
+                    id="party-symbol-upload"
+                  />
+                  {isProfileEditing && (
+                    <label htmlFor="party-symbol-upload" className="btn btn-secondary">
+                      {partySymbolPreview ? 'Change Symbol' : 'Upload Symbol'}
+                    </label>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {isProfileEditing && (
+            <div className="profile-actions">
+              <button 
+                className="btn btn-primary" 
+                onClick={saveProfile}
+                disabled={profileLoading || !profile.fullName.trim()}
+              >
+                {profileLoading ? 'Saving...' : 'Save Changes'}
+              </button>
+              <button 
+                className="btn btn-secondary" 
+                onClick={() => {
+                  setIsProfileEditing(false);
+                  setProfileError('');
+                  setProfileSuccess('');
+                  // Reset to original user data
+                  setProfile({
+                    fullName: user?.fullName || '',
+                    email: user?.email || '',
+                    age: user?.age || '',
+                    phoneNumber: user?.phoneNumber || '',
+                    idProofNumber: user?.idProofNumber || '',
+                    address: user?.address || '',
+                    biography: '',
+                    partyName: '',
+                    partySymbol: ''
+                  });
+                }}
+                disabled={profileLoading}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+          
+          {!isProfileEditing && (
+            <div className="profile-actions">
+              <button className="btn btn-secondary">Preview Profile</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+    );
+  });
+
+  // Election Participation Module Component
+  const ElectionParticipationModule = () => (
+    <div className="candidate-module">
+      <div className="content-header">
+        <h1 className="content-title">Election Participation</h1>
+        <p className="content-subtitle">Apply for elections and manage your candidacy</p>
+      </div>
+      <div className="module-content">
+        <div className="election-sections">
+          <div className="election-section">
+            <h4><FaVoteYea /> Available Elections</h4>
+            <div className="elections-list">
+              {allElections.length > 0 ? (
+                allElections
+                  .filter(election => getElectionStatus(election) !== 'Completed')
+                  .map(election => {
+                    const status = enrollmentStatus[election.id];
+                    const isPending = status?.status === 'PENDING';
+                    const isApproved = status?.status === 'APPROVED';
+                    const isRejected = status?.status === 'REJECTED';
+                    
+                    return (
+                      <div key={election.id} className="election-card">
+                        <div className="election-info">
+                          <h5>{election.title}</h5>
+                          <p>Starts: {new Date(election.startDate).toLocaleString()}</p>
+                          <p>Ends: {new Date(election.endDate).toLocaleString()}</p>
+                          <p>Status: {getElectionStatus(election)}</p>
+                        </div>
+                        <div className="election-status">
+                          <span className={`status ${
+                            isApproved ? 'approved' : 
+                            isPending ? 'pending' : 
+                            isRejected ? 'rejected' : 'open'
+                          }`}>
+                            {isApproved ? 'Enrolled' : 
+                             isPending ? 'Pending Approval' : 
+                             isRejected ? 'Application Rejected' : 'Open for Registration'}
+                          </span>
+                          
+                          {status && <p className="status-message">{status.message}</p>}
+                          
+                          <button 
+                            className={`btn ${
+                              isApproved || isPending ? 'btn-secondary' : 
+                              isRejected ? 'btn-warning' : 'btn-primary'
+                            }`}
+                            onClick={() => handleEnroll(election.id)}
+                            disabled={isApproved || isPending}
+                          >
+                            {isApproved ? '✓ Enrolled' : 
+                             isPending ? '⏳ Pending' : 
+                             isRejected ? 'Re-Apply' : 'Apply Now'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+              ) : (
+                <p>No elections available for registration.</p>
+              )}
+            </div>
+          </div>
+
+          <div className="election-section">
+            <h4><FaClipboardList /> My Applications</h4>
+            <div className="applications-table">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Election</th>
+                    <th>Applied Date</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {enrolledElections.map(election => (
+                    <tr key={election.id}>
+                      <td>{election.title}</td>
+                      <td>{new Date().toLocaleDateString()}</td>
+                      <td><span className="status approved">Approved</span></td>
+                      <td>
+                        <button className="btn btn-sm btn-info">View Details</button>
+                      </td>
+                    </tr>
+                  ))}
+                  {enrolledElections.length === 0 && (
+                    <tr>
+                      <td colSpan="4" style={{ textAlign: 'center' }}>No applications yet</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="election-section">
+            <h4><FaFileAlt /> Eligibility Requirements</h4>
+            <div className="requirements-checklist">
+              <div className="requirement-item completed">
+                <FaCheckCircle />
+                <span>Age requirement (18+ years)</span>
+              </div>
+              <div className="requirement-item completed">
+                <FaCheckCircle />
+                <span>Identity verification</span>
+              </div>
+              <div className="requirement-item pending">
+                <FaClock />
+                <span>Criminal background check</span>
+              </div>
+              <div className="requirement-item pending">
+                <FaClock />
+                <span>Financial disclosure</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Campaign Tools Module Component
+  const CampaignToolsModule = () => (
+    <div className="candidate-module">
+      <div className="content-header">
+        <h1 className="content-title">Campaign Tools</h1>
+        <p className="content-subtitle">Manage your campaign materials and communications</p>
+      </div>
+      <div className="module-content">
+        <div className="campaign-sections">
+          <div className="campaign-section">
+            <h4><FaFileAlt /> Manifesto</h4>
+            <div className="manifesto-upload">
+              <div className="upload-area large">
+                <FaUpload />
+                <h5>Upload Your Manifesto</h5>
+                <p>Share your vision and promises with voters</p>
+                <input type="file" accept=".pdf,.doc,.docx" />
+                <button className="btn btn-primary">Upload Manifesto</button>
+              </div>
+              <div className="manifesto-preview">
+                <h6>Current Manifesto</h6>
+                <p>manifesto_2024.pdf</p>
+                <div className="manifesto-actions">
+                  <button className="btn btn-secondary">Preview</button>
+                  <button className="btn btn-info">Download</button>
+                  <button className="btn btn-warning">Replace</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="campaign-section">
+            <h4><FaBullhorn /> Announcements</h4>
+            <div className="announcement-creator">
+              <textarea 
+                rows="4" 
+                placeholder="Create an announcement for your supporters..."
+                className="announcement-textarea"
+              ></textarea>
+              <div className="announcement-actions">
+                <button className="btn btn-primary">Post Announcement</button>
+                <button className="btn btn-secondary">Save as Draft</button>
+              </div>
+            </div>
+            
+            <div className="announcements-list">
+              <h6>Recent Announcements</h6>
+              <div className="announcement-item">
+                <div className="announcement-content">
+                  <p>"Thank you for your support in the upcoming election. Together, we will build a better future."</p>
+                  <span className="announcement-date">Posted 2 hours ago</span>
+                </div>
+                <div className="announcement-stats">
+                  <span>👁 245 views</span>
+                  <span>❤ 32 likes</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="campaign-section">
+            <h4><FaBullhorn /> Campaign Materials</h4>
+            <div className="materials-grid">
+              <div className="material-upload">
+                <FaImage />
+                <p>Upload Posters</p>
+                <input type="file" accept="image/*" multiple />
+              </div>
+              <div className="material-upload">
+                <FaFileAlt />
+                <p>Upload Brochures</p>
+                <input type="file" accept=".pdf" multiple />
+              </div>
+              <div className="material-upload">
+                <FaUsers />
+                <p>Volunteer Forms</p>
+                <input type="file" accept=".pdf,.doc" multiple />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Notifications Module Component
+  const NotificationsModule = () => (
+    <div className="candidate-module">
+      <div className="content-header">
+        <h1 className="content-title">Notifications</h1>
+        <p className="content-subtitle">Stay updated with important information</p>
+      </div>
+      <div className="module-content">
+        <div className="notifications-sections">
+          <div className="notification-filters">
+            <button className="filter-btn active">All</button>
+            <button className="filter-btn">Applications</button>
+            <button className="filter-btn">Elections</button>
+            <button className="filter-btn">Campaign</button>
+          </div>
+
+          <div className="notifications-list">
+            <div className="notification-item unread">
+              <div className="notification-icon election">
+                <FaVoteYea />
+              </div>
+              <div className="notification-content">
+                <h5>Application Approved</h5>
+                <p>Your application for {enrolledElections[0]?.title || 'Presidential Election 2024'} has been approved.</p>
+                <span className="notification-time">2 hours ago</span>
+              </div>
+            </div>
+
+            <div className="notification-item">
+              <div className="notification-icon reminder">
+                <FaCalendarAlt />
+              </div>
+              <div className="notification-content">
+                <h5>Election Reminder</h5>
+                <p>Election starts in 7 days. Prepare your campaign materials.</p>
+                <span className="notification-time">1 day ago</span>
+              </div>
+            </div>
+
+            <div className="notification-item">
+              <div className="notification-icon system">
+                <FaBell />
+              </div>
+              <div className="notification-content">
+                <h5>Profile Update Required</h5>
+                <p>Please update your candidate profile with recent information.</p>
+                <span className="notification-time">3 days ago</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Results Module Component
+  const ResultsModule = () => (
+    <div className="candidate-module">
+      <div className="content-header">
+        <h1 className="content-title">Results & Reports</h1>
+        <p className="content-subtitle">View your election performance and analytics</p>
+      </div>
+      <div className="module-content">
+        <div className="results-sections">
+          <div className="results-summary">
+            <div className="result-card">
+              <h4>{enrolledElections[0]?.title || 'Recent Election'}</h4>
+              <div className="result-stats">
+                <div className="stat">
+                  <span className="stat-number">1,247</span>
+                  <span className="stat-label">Total Votes</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-number">23.5%</span>
+                  <span className="stat-label">Vote Share</span>
+                </div>
+                <div className="stat">
+                  <span className="stat-number">2nd</span>
+                  <span className="stat-label">Position</span>
+                </div>
+              </div>
+              <div className="result-actions">
+                <button className="btn btn-primary">
+                  <FaDownload /> Download Report
+                </button>
+                <button className="btn btn-info">
+                  <FaEye /> View Details
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="performance-analytics">
+            <h4><FaChartBar /> Performance Analytics</h4>
+            <div className="analytics-grid">
+              <div className="analytics-item">
+                <h6>Vote Distribution</h6>
+                <div className="chart-placeholder">
+                  <p>Pie chart showing vote distribution by region</p>
+                </div>
+              </div>
+              <div className="analytics-item">
+                <h6>Campaign Reach</h6>
+                <div className="reach-stats">
+                  <div className="reach-item">
+                    <span>Announcements Views</span>
+                    <span>5,240</span>
+                  </div>
+                  <div className="reach-item">
+                    <span>Profile Visits</span>
+                    <span>3,156</span>
+                  </div>
+                  <div className="reach-item">
+                    <span>Manifesto Downloads</span>
+                    <span>892</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="historical-results">
+            <h4>Historical Performance</h4>
+            <div className="history-table">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Election</th>
+                    <th>Date</th>
+                    <th>Votes</th>
+                    <th>Position</th>
+                    <th>Report</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {enrolledElections.map((election, index) => (
+                    <tr key={election.id}>
+                      <td>{election.title}</td>
+                      <td>{new Date(election.startDate).toLocaleDateString()}</td>
+                      <td>{1247 - index * 200}</td>
+                      <td>{index + 1}st</td>
+                      <td><button className="btn btn-sm btn-info">Download</button></td>
+                    </tr>
+                  ))}
+                  {enrolledElections.length === 0 && (
+                    <tr>
+                      <td colSpan="5" style={{ textAlign: 'center' }}>No election results yet</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Render the appropriate module based on active tab
+  const renderActiveModule = () => {
+    switch (activeTab) {
+      case 'home': return <HomeModule />;
+      case 'authentication': return <AuthenticationModule />;
+      case 'profile': return <ProfileManagementModule />;
+      case 'elections': return <ElectionParticipationModule />;
+      case 'campaign': return <CampaignToolsModule />;
+      case 'notifications': return <NotificationsModule />;
+      case 'results': return <ResultsModule />;
+      default: return <HomeModule />;
+    }
+  };
+
+  return (
+    <div className="candidate-dashboard">
+      {/* Sidebar Navigation */}
+      <div className="candidate-sidebar">
+        <div className="sidebar-header">
+          <h1 className="sidebar-title">VoteRow Candidate</h1>
+          <p className="sidebar-subtitle">Campaign Portal</p>
+        </div>
+        <nav className="sidebar-nav">
+          {tabs.map(tab => {
+            const IconComponent = tab.icon;
+            return (
+              <button
+                key={tab.id}
+                className={`nav-tab ${activeTab === tab.id ? 'active' : ''}`}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                <IconComponent className="tab-icon" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+
+      {/* Main Content */}
+      <div className="candidate-content">
+        <div className="candidate-content-area">
+          {loading && <div className="loading-spinner">Loading...</div>}
+          {renderActiveModule()}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default ParticipantDashboard;
