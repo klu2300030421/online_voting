@@ -30,4 +30,9 @@ public interface AuditLogRepository extends JpaRepository<AuditLog, Long> {
     
     @Query("SELECT COUNT(a) FROM AuditLog a WHERE a.user = :user AND a.action = 'LOGIN' AND a.timestamp > :since")
     Long countLoginAttemptsSince(@Param("user") User user, @Param("since") LocalDateTime since);
+    
+    List<AuditLog> findByEntityTypeOrderByTimestampDesc(String entityType);
+    List<AuditLog> findByTimestampBetweenOrderByTimestampDesc(LocalDateTime start, LocalDateTime end);
+    long countByLogLevel(AuditLog.LogLevel logLevel);
+    long countByTimestampAfter(LocalDateTime timestamp);
 }

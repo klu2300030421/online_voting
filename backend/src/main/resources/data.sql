@@ -1,0 +1,3 @@
+-- Initialize default admin user for testing (H2 compatible)
+MERGE INTO users (full_name, email, password, age, user_type, admin_role, is_active, is_verified, two_factor_enabled, created_at, updated_at) 
+VALUES ('Default Admin', 'admin@test.com', '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2uheWG/igi.', 30, 'ROLE_ADMIN', 'SUPER_ADMIN', true, true, false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);

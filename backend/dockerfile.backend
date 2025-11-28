@@ -1,0 +1,27 @@
+# Use Maven with JDK
+FROM maven:3.9.6-eclipse-temurin-17 AS build
+WORKDIR /app
+
+# Copy Maven files first (for caching)
+COPY pom.xml mvnw ./
+COPY .mvn .mvn
+
+# Download dependencies
+RUN chmod +x mvnw
+RUN ./mvnw dependency:go-offline
+
+# Copy the rest of the code
+COPY src src
+
+# Build the app
+RUN ./mvnw package -DskipTests
+
+# ============================
+# Run Stage
+# ============================
+FROM eclipse-temurin:17-jdk
+WORKDIR /app
+COPY --from=build /app/target/*.jar app.jar
+
+EXPOSE 8086
+ENTRYPOINT ["java", "-jar", "app.jar"]

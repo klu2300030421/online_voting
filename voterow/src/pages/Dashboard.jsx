@@ -6,12 +6,16 @@ import ParticipantDashboard from '../components/ParticipantDashboard';
 const Dashboard = ({ currentUser, onUpdateUser }) => {
   const renderDashboard = () => {
     switch (currentUser.userType) {
+      case 'ROLE_ADMIN':
       case 'ADMIN':
         return <AdminDashboard user={currentUser} onUpdateUser={onUpdateUser} />;
+      case 'ROLE_VOTER':
       case 'VOTER':
         return <VoterDashboard user={currentUser} onUpdateUser={onUpdateUser} />;
+      case 'ROLE_PARTICIPANT':
+      case 'ROLE_CANDIDATE':
       case 'PARTICIPANT':
-      case 'CANDIDATE': // Handle both frontend terms
+      case 'CANDIDATE':
         return <ParticipantDashboard user={currentUser} onUpdateUser={onUpdateUser} />;
       default:
         return <p>Invalid user type: {currentUser.userType}</p>;
@@ -21,11 +25,16 @@ const Dashboard = ({ currentUser, onUpdateUser }) => {
   // Display user-friendly type names
   const getUserTypeDisplay = () => {
     switch (currentUser.userType) {
+      case 'ROLE_ADMIN':
       case 'ADMIN':
         return 'ADMIN';
+      case 'ROLE_VOTER':
       case 'VOTER':
         return 'VOTER';
+      case 'ROLE_PARTICIPANT':
+      case 'ROLE_CANDIDATE':
       case 'PARTICIPANT':
+      case 'CANDIDATE':
         return 'CANDIDATE';
       default:
         return currentUser.userType;

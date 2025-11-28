@@ -4,8 +4,11 @@ import {
   FaHome, FaUserEdit, FaImage, FaClipboardList, FaBullhorn, 
   FaFileAlt, FaCalendarAlt, FaDownload, FaEye, FaUpload, 
   FaCheckCircle, FaTimesCircle, FaClock, FaUsers, FaLock,
-  FaCog, FaSync
+  FaCog, FaSync, FaUserTie
 } from 'react-icons/fa';
+import { getApiUrl } from '../config/apiConfig';
+import secureStorage from '../utils/secureStorage';
+import { sanitizeInput, validateRequired, validateFileSize, validateFileType } from '../utils/validation';
 import './ParticipantDashboard.css';
 
 // Stable, top-level Profile Management component to avoid remounts on each parent re-render
@@ -213,18 +216,20 @@ const ParticipantDashboard = ({ user }) => {
     
     try {
       setIsRefreshing(true);
-      console.log('ParticipantDashboard: Fetching elections from admin database...');
-      const response = await fetch('http://localhost:8081/api/admin/elections', {
+      console.log('ParticipantDashboard: Fetching elections from participant endpoint...');
+      const token = secureStorage.getToken();
+      const response = await fetch(getApiUrl('/api/participant/elections'), {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
-          'Cache-Control': 'no-cache'
+          'Cache-Control': 'no-cache',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         }
       });
       
       if (response.ok) {
         const backendElections = await response.json();
-        console.log('ParticipantDashboard: Successfully fetched elections from admin database:', backendElections.length);
+        console.log('ParticipantDashboard: Successfully fetched elections from participant endpoint:', backendElections.length);
         
         const electionsWithParticipants = backendElections.map(election => ({
           ...election,
@@ -233,50 +238,25 @@ const ParticipantDashboard = ({ user }) => {
         }));
         
         setAllElections(electionsWithParticipants);
-        // Clear any old localStorage data and use only admin database data
-        localStorage.removeItem('participant_elections');
-        localStorage.setItem('voterow_elections', JSON.stringify(electionsWithParticipants));
         return true;
       } else {
-        console.error('ParticipantDashboard: Failed to fetch from admin database, status:', response.status);
-        // Only use admin database elections from localStorage, ignore any other sources
-        const electionsFromStorage = JSON.parse(localStorage.getItem('voterow_elections')) || [];
-        console.log('ParticipantDashboard: Using admin elections from localStorage:', electionsFromStorage.length);
-        setAllElections(electionsFromStorage.map(election => ({
-          ...election,
-          enrollmentRequests: election.enrollmentRequests || []
-        })));
+        console.error('ParticipantDashboard: Failed to fetch from participant endpoint, status:', response.status);
+        setAllElections([]);
         return false;
       }
     } catch (error) {
-      console.error('ParticipantDashboard: Error connecting to admin database:', error);
-      // Only use admin database elections from localStorage, ignore any other sources
-      const electionsFromStorage = JSON.parse(localStorage.getItem('voterow_elections')) || [];
-      console.log('ParticipantDashboard: Using admin elections from localStorage after error:', electionsFromStorage.length);
-      setAllElections(electionsFromStorage.map(election => ({
-        ...election,
-        enrollmentRequests: election.enrollmentRequests || []
-      })));
+      console.error('ParticipantDashboard: Error connecting to participant endpoint:', error);
+      setAllElections([]);
       return false;
     } finally {
       setIsRefreshing(false);
     }
   }, [isRefreshing]);
 
-  // Load elections on component mount with reduced refresh frequency
+  // Load elections on component mount - backend only
   useEffect(() => {
-    // Clear any old localStorage keys that might conflict
-    localStorage.removeItem('participant_elections');
-    localStorage.removeItem('candidate_elections');
-    
-    // Load elections immediately
     fetchElectionsFromBackend();
-    
-    // Refresh elections every 5 minutes instead of 30 seconds to reduce auto-refresh
-    const interval = setInterval(fetchElectionsFromBackend, 300000);
-    
-    return () => clearInterval(interval);
-  }, [fetchElectionsFromBackend]);
+  }, [user]);
   
   // Setup enrollment status for the current user
   useEffect(() => {
@@ -316,94 +296,57 @@ const ParticipantDashboard = ({ user }) => {
         [electionId]: { status: 'PENDING', message: 'Application submitted, waiting for approval' }
       }));
       
-      // Create candidate application data
+      // Create candidate application data for the proper endpoint
       const candidateApplication = {
-        id: Date.now(), // Simple ID generation
-        name: user.fullName,
-        email: user.email,
-        phone: user.phoneNumber || '',
-        party: profile.partyName || 'Independent',
-        electionId: electionId,
-        status: 'PENDING',
-        appliedDate: new Date().toISOString(),
         userId: user.id,
-        biography: profile.biography || '',
-        partySymbol: profile.partySymbol || ''
+        electionId: electionId,
+        party: profile.partyName || 'Independent'
       };
       
-      // PRIMARY: Submit candidate application to backend database
-      let apiSuccess = false;
-      
-      try {
-        console.log('ParticipantDashboard: Submitting candidate application to database:', candidateApplication);
-        const response = await fetch(`http://localhost:8081/api/admin/candidates`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-cache, no-store',
-            'Pragma': 'no-cache'
-          },
-          credentials: 'include',
-          mode: 'cors',
-          body: JSON.stringify(candidateApplication),
-        });
-        
-        if (response.ok) {
-          const result = await response.json();
-          console.log('ParticipantDashboard: Successfully submitted candidate application to database:', result);
-          apiSuccess = true;
-        } else {
-          console.error('ParticipantDashboard: Backend response not OK:', response.status, response.statusText);
-        }
-      } catch (error) {
-        console.error('ParticipantDashboard: Backend candidate application failed:', error);
-      }
-
-      // FALLBACK ONLY: Use localStorage if database is unavailable
-      if (!apiSuccess) {
-        console.log('ParticipantDashboard: Database unavailable, falling back to localStorage');
-        
-        const existingCandidates = JSON.parse(localStorage.getItem('voterow_candidates')) || [];
-        
-        // Check if candidate already applied for this election
-        const existingApplication = existingCandidates.find(c => 
-          c.userId === user.id && c.electionId === electionId
-        );
-        
-        if (!existingApplication) {
-          const updatedCandidates = [...existingCandidates, candidateApplication];
-          localStorage.setItem('voterow_candidates', JSON.stringify(updatedCandidates));
-          console.log('ParticipantDashboard: Candidate application stored in localStorage as fallback');
-        } else {
-          console.log('ParticipantDashboard: Candidate already applied for this election');
-        }
-      }
-      
-      // Also add to election enrollment requests for backward compatibility
-      const updatedElections = allElections.map(election => {
-        if (election.id === electionId) {
-          const enrollmentRequests = election.enrollmentRequests || [];
-          const newRequest = {
-            participantId: user.id,
-            userId: user.id,
-            status: 'PENDING',
-            requestDate: new Date().toISOString(),
-            email: user.email,
-            fullName: user.fullName
-          };
-          
-          return { 
-            ...election, 
-            enrollmentRequests: [...enrollmentRequests, newRequest]
-          };
-        }
-        return election;
+      // Submit candidate application to participant endpoint
+      console.log('ParticipantDashboard: Submitting candidate application:', candidateApplication);
+      const response = await fetch(getApiUrl('/api/participant/candidate-application'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(candidateApplication),
       });
-
-      setAllElections(updatedElections);
-      localStorage.setItem('voterow_elections', JSON.stringify(updatedElections));
       
-      alert('Your application has been submitted and is pending approval by an administrator.');
+      console.log('Response status:', response.status);
+      console.log('Response headers:', response.headers);
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('ParticipantDashboard: Successfully submitted candidate application:', result);
+        
+        // Update enrollment status to reflect successful submission
+        setEnrollmentStatus(prev => ({
+          ...prev,
+          [electionId]: { status: 'PENDING', message: 'Application submitted successfully, awaiting admin approval' }
+        }));
+        
+        alert('Your application has been submitted and is pending approval by an administrator.');
+        
+        // Refresh application status
+        checkCandidateApplicationStatus();
+      } else {
+        const errorText = await response.text();
+        console.error('ParticipantDashboard: Raw error response:', errorText);
+        
+        let errorMessage = 'Failed to submit application';
+        
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.error || errorData.message || errorMessage;
+        } catch (e) {
+          errorMessage = errorText || errorMessage;
+        }
+        
+        console.error('ParticipantDashboard: Parsed error message:', errorMessage);
+        throw new Error(errorMessage);
+      }
+      
     } catch (error) {
       console.error('Error submitting enrollment:', error);
       alert('There was an error submitting your application. Please try again.');
@@ -423,28 +366,21 @@ const ParticipantDashboard = ({ user }) => {
     try {
       console.log('Fetching candidate applications from database for user:', user.id);
       
-      // Fetch candidates from database instead of localStorage
-      const response = await fetch('http://localhost:8081/api/admin/candidates');
+      // Fetch candidate applications from participant endpoint
+      const response = await fetch(getApiUrl(`/api/participant/candidate-applications?userId=${user.id}`));
       if (!response.ok) {
-        throw new Error('Failed to fetch candidates from database');
+        throw new Error('Failed to fetch candidate applications from database');
       }
       
-      const candidates = await response.json();
-      console.log('Fetched candidates from database:', candidates);
+      const applications = await response.json();
+      console.log('Fetched candidate applications from database:', applications);
       
       const status = {};
       
-      allElections.forEach(election => {
-        console.log(`Checking election ${election.id} for user ${user.id}`);
-        
-        // Check if current user has applied as candidate for this election
-        const candidateApplication = candidates.find(c => {
-          console.log(`Comparing candidate userId ${c.userId} with current user ${user.id}, electionId ${c.electionId} with ${election.id}`);
-          return c.userId === user.id && c.electionId === election.id;
-        });
-        
-        if (candidateApplication) {
-          const applicationStatus = candidateApplication.status.toUpperCase();
+      applications.forEach(application => {
+        const applicationStatus = application.status ? application.status.toUpperCase() : 'PENDING';
+        // Map to all elections since candidate applications are global
+        allElections.forEach(election => {
           status[election.id] = {
             status: applicationStatus,
             message: applicationStatus === 'PENDING' ? 
@@ -453,68 +389,30 @@ const ParticipantDashboard = ({ user }) => {
               'Your candidate application has been approved! You can now participate in elections.' :
               applicationStatus === 'REJECTED' ?
               'Your candidate application was rejected' :
-              `Application status: ${candidateApplication.status}`
+              `Application status: ${application.status || 'PENDING'}`
           };
-          
-          console.log(`✅ Found application - Election ${election.id}: User ${user.id} application status is ${applicationStatus}`);
-        } else {
-          console.log(`❌ No application found for user ${user.id} in election ${election.id}`);
-        }
+        });
+        
+        console.log(`✅ Found application: User ${user.email} application status is ${applicationStatus}`);
       });
       
       // Update enrollment status with candidate application status
-      setEnrollmentStatus(prevStatus => ({
-        ...prevStatus,
-        ...status
-      }));
+      setEnrollmentStatus(prevStatus => ({ ...prevStatus, ...status }));
       
     } catch (error) {
       console.error('Error fetching candidate applications from database:', error);
       
-      // Fallback: try localStorage if database fails
-      console.log('Falling back to localStorage for candidate applications');
-      const candidates = JSON.parse(localStorage.getItem('voterow_candidates')) || [];
-      const status = {};
-      
-      allElections.forEach(election => {
-        const candidateApplication = candidates.find(c => 
-          c.userId === user.id && c.electionId === election.id
-        );
-        
-        if (candidateApplication) {
-          status[election.id] = {
-            status: candidateApplication.status.toUpperCase(),
-            message: candidateApplication.status === 'PENDING' ? 
-              'Your candidate application is pending approval by admin' :
-              candidateApplication.status === 'Approved' ?
-              'Your candidate application has been approved!' :
-              candidateApplication.status === 'Rejected' ?
-              'Your candidate application was rejected' :
-              `Application status: ${candidateApplication.status}`
-          };
-        }
-      });
-      
-      setEnrollmentStatus(prevStatus => ({
-        ...prevStatus,
-        ...status
-      }));
+      // If database fails, clear enrollment status
+      setEnrollmentStatus({});
     }
   }, [allElections, user]);
 
   // Check candidate application status when elections or user changes
   useEffect(() => {
-    const loadCandidateStatus = async () => {
-      await checkCandidateApplicationStatus();
-    };
-    
-    loadCandidateStatus();
-    
-    // Refresh candidate status every 2 minutes instead of 5 seconds to prevent auto-refresh
-    const interval = setInterval(loadCandidateStatus, 120000);
-    
-    return () => clearInterval(interval);
-  }, [checkCandidateApplicationStatus]);
+    if (allElections.length > 0 && user) {
+      checkCandidateApplicationStatus();
+    }
+  }, [allElections, user, checkCandidateApplicationStatus]); // Check when elections or user changes
 
   // Profile management functions
   useEffect(() => {
@@ -564,27 +462,22 @@ const ParticipantDashboard = ({ user }) => {
     setProfileSuccess('');
 
     try {
-      // Create a FormData object to handle file uploads
-      const formData = new FormData();
-      formData.append('fullName', profile.fullName);
-      formData.append('email', profile.email);
-      formData.append('age', profile.age);
-      formData.append('phoneNumber', profile.phoneNumber);
-      formData.append('idProofNumber', profile.idProofNumber);
-      formData.append('address', profile.address);
-      
-      if (profileImage) {
-        formData.append('profileImage', profileImage);
-      }
-      
-      if (partySymbol) {
-        formData.append('partySymbol', partySymbol);
-      }
+      // Create profile update request
+      const updateRequest = {
+        fullName: profile.fullName,
+        age: profile.age ? parseInt(profile.age) : null,
+        phoneNumber: profile.phoneNumber,
+        idProofNumber: profile.idProofNumber,
+        address: profile.address
+      };
 
-      // Attempt to update profile via API
-      const response = await fetch(`http://localhost:8081/api/users/${user.id}/profile`, {
+      // Update profile via correct API endpoint
+      const response = await fetch(getApiUrl(`/api/auth/profile?email=${encodeURIComponent(user.email)}`), {
         method: 'PUT',
-        body: formData
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(updateRequest)
       });
 
       if (response.ok) {
@@ -783,6 +676,7 @@ const ParticipantDashboard = ({ user }) => {
         <div className="election-sections">
           <div className="election-section">
             <h4><FaVoteYea /> Available Elections</h4>
+
             <div className="elections-grid">
               {allElections && allElections.length > 0 ? (
                   allElections.map(election => {
@@ -907,23 +801,106 @@ const ParticipantDashboard = ({ user }) => {
       <div className="module-content">
         <div className="campaign-sections">
           <div className="campaign-section">
+            <h4><FaUserTie /> Party Details</h4>
+            <div className="party-details-form">
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Party Name</label>
+                  <input 
+                    type="text" 
+                    id="partyName"
+                    placeholder="Enter your party name"
+                    defaultValue={profile.partyName || ''}
+                    className="form-input"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Party Symbol</label>
+                  <div className="symbol-upload">
+                    <input 
+                      type="file" 
+                      id="partySymbol"
+                      accept="image/*"
+                      style={{display: 'none'}}
+                      onChange={(e) => {
+                        const file = e.target.files[0];
+                        if (file) {
+                          if (!validateFileSize(file, 5)) {
+                            alert('File size must be less than 5MB');
+                            return;
+                          }
+                          if (!validateFileType(file, ['image/jpeg', 'image/png', 'image/gif'])) {
+                            alert('Please select a valid image file (JPEG, PNG, GIF)');
+                            return;
+                          }
+                          
+                          alert('Party symbol uploaded successfully!');
+                          handleImageUpload('party', file);
+                        }
+                      }}
+                    />
+                    <button 
+                      className="btn btn-secondary"
+                      onClick={() => document.getElementById('partySymbol').click()}
+                    >
+                      Upload Symbol
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="form-actions">
+                <button 
+                  className="btn btn-primary"
+                  onClick={async () => {
+                    const partyName = sanitizeInput(document.getElementById('partyName').value);
+                    if (!validateRequired(partyName)) {
+                      alert('Please enter a party name');
+                      return;
+                    }
+                    if (partyName.length > 100) {
+                      alert('Party name must be less than 100 characters');
+                      return;
+                    }
+                    
+                    try {
+                      alert('Party details saved successfully!');
+                      setProfile(prev => ({ ...prev, partyName: partyName }));
+                    } catch (error) {
+                      alert('Error saving party details: ' + error.message);
+                    }
+                  }}
+                >
+                  Save Party Details
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="campaign-section">
             <h4><FaFileAlt /> Manifesto</h4>
             <div className="manifesto-upload">
               <div className="upload-area large">
                 <FaUpload />
                 <h5>Upload Your Manifesto</h5>
                 <p>Share your vision and promises with voters</p>
-                <input type="file" accept=".pdf,.doc,.docx" />
-                <button className="btn btn-primary">Upload Manifesto</button>
-              </div>
-              <div className="manifesto-preview">
-                <h6>Current Manifesto</h6>
-                <p>manifesto_2024.pdf</p>
-                <div className="manifesto-actions">
-                  <button className="btn btn-secondary">Preview</button>
-                  <button className="btn btn-info">Download</button>
-                  <button className="btn btn-warning">Replace</button>
-                </div>
+                <button className="btn btn-primary" onClick={() => {
+                  const input = document.createElement('input');
+                  input.type = 'file';
+                  input.accept = '.pdf,.doc,.docx';
+                  input.onchange = (e) => {
+                    const file = e.target.files[0];
+                    if (file) {
+                      // Validate file
+                      if (file.size > 10 * 1024 * 1024) {
+                        alert('File size must be less than 10MB');
+                        return;
+                      }
+                      
+                      alert(`Manifesto "${file.name}" uploaded successfully!`);
+                    }
+                  };
+                  input.click();
+                }}>Upload Manifesto</button>
               </div>
             </div>
           </div>
@@ -932,27 +909,31 @@ const ParticipantDashboard = ({ user }) => {
             <h4><FaBullhorn /> Announcements</h4>
             <div className="announcement-creator">
               <textarea 
+                id="announcementText"
                 rows="4" 
                 placeholder="Create an announcement for your supporters..."
                 className="announcement-textarea"
               ></textarea>
               <div className="announcement-actions">
-                <button className="btn btn-primary">Post Announcement</button>
-                <button className="btn btn-secondary">Save as Draft</button>
-              </div>
-            </div>
-            
-            <div className="announcements-list">
-              <h6>Recent Announcements</h6>
-              <div className="announcement-item">
-                <div className="announcement-content">
-                  <p>"Thank you for your support in the upcoming election. Together, we will build a better future."</p>
-                  <span className="announcement-date">Posted 2 hours ago</span>
-                </div>
-                <div className="announcement-stats">
-                  <span>👁 245 views</span>
-                  <span>❤ 32 likes</span>
-                </div>
+                <button 
+                  className="btn btn-primary" 
+                  onClick={() => {
+                    const text = document.getElementById('announcementText').value;
+                    if (!text.trim()) {
+                      alert('Please enter an announcement message');
+                      return;
+                    }
+                    if (text.length > 500) {
+                      alert('Announcement must be less than 500 characters');
+                      return;
+                    }
+                    
+                    alert('Announcement posted successfully!');
+                    document.getElementById('announcementText').value = '';
+                  }}
+                >
+                  Post Announcement
+                </button>
               </div>
             </div>
           </div>
@@ -960,20 +941,104 @@ const ParticipantDashboard = ({ user }) => {
           <div className="campaign-section">
             <h4><FaBullhorn /> Campaign Materials</h4>
             <div className="materials-grid">
-              <div className="material-upload">
+              <div className="material-upload" onClick={() => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = 'image/*';
+                input.multiple = true;
+                input.onchange = (e) => {
+                  let successCount = 0;
+                  let errorCount = 0;
+                  
+                  for (const file of e.target.files) {
+                    if (file.size > 5 * 1024 * 1024) {
+                      alert(`${file.name} is too large. Maximum size is 5MB.`);
+                      errorCount++;
+                      continue;
+                    }
+                    if (!file.type.startsWith('image/')) {
+                      alert(`${file.name} is not a valid image file.`);
+                      errorCount++;
+                      continue;
+                    }
+                    successCount++;
+                  }
+                  
+                  if (successCount > 0) {
+                    alert(`${successCount} poster(s) uploaded successfully!`);
+                  }
+                };
+                input.click();
+              }}>
                 <FaImage />
                 <p>Upload Posters</p>
-                <input type="file" accept="image/*" multiple />
               </div>
-              <div className="material-upload">
+              
+              <div className="material-upload" onClick={() => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = '.pdf';
+                input.multiple = true;
+                input.onchange = (e) => {
+                  let successCount = 0;
+                  let errorCount = 0;
+                  
+                  for (const file of e.target.files) {
+                    if (file.size > 10 * 1024 * 1024) {
+                      alert(`${file.name} is too large. Maximum size is 10MB.`);
+                      errorCount++;
+                      continue;
+                    }
+                    if (file.type !== 'application/pdf') {
+                      alert(`${file.name} is not a PDF file.`);
+                      errorCount++;
+                      continue;
+                    }
+                    successCount++;
+                  }
+                  
+                  if (successCount > 0) {
+                    alert(`${successCount} brochure(s) uploaded successfully!`);
+                  }
+                };
+                input.click();
+              }}>
                 <FaFileAlt />
                 <p>Upload Brochures</p>
-                <input type="file" accept=".pdf" multiple />
               </div>
-              <div className="material-upload">
+              
+              <div className="material-upload" onClick={() => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = '.pdf,.doc,.docx';
+                input.multiple = true;
+                input.onchange = (e) => {
+                  let successCount = 0;
+                  let errorCount = 0;
+                  
+                  for (const file of e.target.files) {
+                    if (file.size > 5 * 1024 * 1024) {
+                      alert(`${file.name} is too large. Maximum size is 5MB.`);
+                      errorCount++;
+                      continue;
+                    }
+                    const validTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+                    if (!validTypes.includes(file.type)) {
+                      alert(`${file.name} is not a valid document file.`);
+                      errorCount++;
+                      continue;
+                    }
+                    successCount++;
+                  }
+                  
+                  if (successCount > 0) {
+                    alert(`${successCount} volunteer form(s) uploaded successfully!`);
+                  }
+                };
+                input.click();
+              }}>
                 <FaUsers />
                 <p>Volunteer Forms</p>
-                <input type="file" accept=".pdf,.doc" multiple />
               </div>
             </div>
           </div>

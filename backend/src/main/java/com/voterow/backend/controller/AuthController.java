@@ -4,6 +4,7 @@ import com.voterow.backend.dto.LoginRequest;
 import com.voterow.backend.dto.SignUpRequest;
 import com.voterow.backend.dto.UpdateProfileRequest;
 import com.voterow.backend.model.User;
+import com.voterow.backend.security.JwtTokenProvider;
 import com.voterow.backend.service.AuthService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -20,12 +21,12 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/auth")
 @RequiredArgsConstructor
-@CrossOrigin(origins = {"http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176"})
 public class AuthController {
     
     // These must be final
     private final AuthService authService;
     private final AuthenticationManager authenticationManager;
+    private final JwtTokenProvider jwtTokenProvider;
 
     @PostMapping("/signup")
     public ResponseEntity<?> signup(@Valid @RequestBody SignUpRequest signUpRequest) {
@@ -39,19 +40,38 @@ public class AuthController {
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@Valid @RequestBody LoginRequest loginRequest) {
+        System.out.println("Login attempt for email: " + loginRequest.getEmail());
+        
         try {
+            // First check if user exists
+            User user = authService.getUserByEmail(loginRequest.getEmail());
+            if (user == null) {
+                System.out.println("User not found: " + loginRequest.getEmail());
+                return ResponseEntity.status(401).body("Invalid email or password.");
+            }
+            
+            if (!user.getIsActive()) {
+                System.out.println("User account is deactivated: " + loginRequest.getEmail());
+                return ResponseEntity.status(401).body("Account is deactivated.");
+            }
+            
             Authentication authentication = authenticationManager.authenticate(
                     new UsernamePasswordAuthenticationToken(loginRequest.getEmail(), loginRequest.getPassword())
             );
             SecurityContextHolder.getContext().setAuthentication(authentication);
             
-            // Get user details and return them
-            User user = authService.getUserByEmail(loginRequest.getEmail());
-            if (user == null) {
-                return ResponseEntity.status(404).body("User not found.");
-            }
+            // Generate JWT token
+            String jwt = jwtTokenProvider.generateToken(loginRequest.getEmail());
             
-            // Return complete user information as JSON
+            // Update last login time
+            user = authService.updateLastLogin(loginRequest.getEmail());
+            System.out.println("Login successful for: " + loginRequest.getEmail());
+            
+            // Return complete user information with JWT token
+            Map<String, Object> response = new HashMap<>();
+            response.put("token", jwt);
+            response.put("type", "Bearer");
+            
             Map<String, Object> userInfo = new HashMap<>();
             userInfo.put("id", user.getId());
             userInfo.put("email", user.getEmail());
@@ -65,9 +85,14 @@ public class AuthController {
             userInfo.put("isActive", user.getIsActive());
             userInfo.put("isVerified", user.getIsVerified());
             
-            return ResponseEntity.ok(userInfo);
-        } catch (Exception e) {
+            response.put("user", userInfo);
+            return ResponseEntity.ok(response);
+        } catch (org.springframework.security.authentication.BadCredentialsException e) {
             return ResponseEntity.status(401).body("Invalid email or password.");
+        } catch (org.springframework.security.core.userdetails.UsernameNotFoundException e) {
+            return ResponseEntity.status(401).body("User not found or account deactivated.");
+        } catch (Exception e) {
+            return ResponseEntity.status(401).body("Authentication failed: " + e.getClass().getSimpleName());
         }
     }
 
@@ -114,6 +139,7 @@ public class AuthController {
             userInfo.put("phoneNumber", updatedUser.getPhoneNumber() != null ? updatedUser.getPhoneNumber() : "");
             userInfo.put("idProofNumber", updatedUser.getIdProofNumber() != null ? updatedUser.getIdProofNumber() : "");
             userInfo.put("address", updatedUser.getAddress() != null ? updatedUser.getAddress() : "");
+            userInfo.put("partyName", updatedUser.getPartyName() != null ? updatedUser.getPartyName() : "");
             userInfo.put("userType", updatedUser.getUserType().name());
             userInfo.put("adminRole", updatedUser.getAdminRole() != null ? updatedUser.getAdminRole().name() : "");
             userInfo.put("isActive", updatedUser.getIsActive());

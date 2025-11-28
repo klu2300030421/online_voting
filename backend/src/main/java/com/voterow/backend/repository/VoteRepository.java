@@ -6,48 +6,54 @@ import com.voterow.backend.model.User;
 import com.voterow.backend.model.Candidate;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
-
-import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface VoteRepository extends JpaRepository<Vote, Long> {
     
+    // Check if voter already voted in election
+    Optional<Vote> findByVoterAndElection(User voter, Election election);
+    
+    // Check if voter already voted in election (boolean method)
     boolean existsByElectionAndVoter(Election election, User voter);
     
-    List<Vote> findByElectionOrderByVotedAtDesc(Election election);
+    // Get all votes for an election
+    List<Vote> findByElection(Election election);
     
-    List<Vote> findByVoterOrderByVotedAtDesc(User voter);
+    // Count votes for a candidate in an election
+    long countByCandidateAndElection(Candidate candidate, Election election);
     
-    List<Vote> findByCandidateOrderByVotedAtDesc(Candidate candidate);
+    // Count valid votes by election
+    long countValidVotesByElection(Election election);
     
-    // Add missing method for counting votes by election ID
-    Long countByElectionId(Long electionId);
+    // Get vote count by election
+    @Query("SELECT COUNT(v) FROM Vote v WHERE v.election = ?1")
+    long countVotesByElection(Election election);
     
-    @Query("SELECT COUNT(v) FROM Vote v WHERE v.election = :election AND v.isValid = true")
-    Long countValidVotesByElection(@Param("election") Election election);
+    // Get election results with vote counts by candidate
+    @Query("SELECT c.user.fullName, c.partyName, COUNT(v.id) as voteCount " +
+           "FROM Vote v JOIN v.candidate c " +
+           "WHERE v.election.id = :electionId " +
+           "GROUP BY c.id, c.user.fullName, c.partyName " +
+           "ORDER BY COUNT(v.id) DESC")
+    List<Object[]> getVoteCountsByElection(Long electionId);
     
-    @Query("SELECT COUNT(v) FROM Vote v WHERE v.candidate = :candidate AND v.isValid = true")
-    Long countValidVotesByCandidate(@Param("candidate") Candidate candidate);
+    @Query("SELECT c.id, c.user.fullName, c.partyName, COUNT(v) FROM Vote v " +
+           "JOIN v.candidate c WHERE v.election.id = :electionId " +
+           "GROUP BY c.id, c.user.fullName, c.partyName ORDER BY COUNT(v) DESC")
+    List<Object[]> countVotesByCandidate(@Param("electionId") Long electionId);
     
-    @Query("SELECT v.candidate, COUNT(v) as voteCount FROM Vote v WHERE v.election = :election AND v.isValid = true GROUP BY v.candidate ORDER BY COUNT(v) DESC")
-    List<Object[]> getElectionResults(@Param("election") Election election);
+    // Delete all votes by a specific voter (for cascading delete)
+    void deleteByVoter(User voter);
     
-    @Query("SELECT COUNT(v) FROM Vote v WHERE v.election = :election AND v.votedAt BETWEEN :startTime AND :endTime")
-    Long countVotesByElectionAndTimeRange(@Param("election") Election election,
-                                        @Param("startTime") LocalDateTime startTime,
-                                        @Param("endTime") LocalDateTime endTime);
+    @Query("DELETE FROM Vote v WHERE v.voter.id = :voterId")
+    @Modifying
+    void deleteByVoterId(@Param("voterId") Long voterId);
     
-    @Query("SELECT COUNT(DISTINCT v.voter) FROM Vote v WHERE v.election = :election")
-    Long countUniqueVotersByElection(@Param("election") Election election);
-    
-    @Query("SELECT v FROM Vote v WHERE v.voterIpAddress = :ipAddress AND v.votedAt > :since")
-    List<Vote> findRecentVotesByIpAddress(@Param("ipAddress") String ipAddress, 
-                                        @Param("since") LocalDateTime since);
-    
-    @Query("SELECT v FROM Vote v WHERE v.voter = :voter AND v.votedAt > :since")
-    List<Vote> findRecentVotesByVoter(@Param("voter") User voter, 
-                                    @Param("since") LocalDateTime since);
+    // Get all votes by a specific voter
+    List<Vote> findByVoter(User voter);
 }

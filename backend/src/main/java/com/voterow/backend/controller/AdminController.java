@@ -3,9 +3,20 @@ package com.voterow.backend.controller;
 import com.voterow.backend.model.User;
 import com.voterow.backend.model.UserType;
 import com.voterow.backend.model.Election;
+import com.voterow.backend.model.Candidate;
+import com.voterow.backend.model.ElectionParticipant;
+import com.voterow.backend.model.Vote;
 import com.voterow.backend.repository.UserRepository;
 import com.voterow.backend.repository.ElectionRepository;
+import com.voterow.backend.repository.CandidateRepository;
+import com.voterow.backend.repository.ElectionParticipantRepository;
+import com.voterow.backend.repository.VoteRepository;
+import com.voterow.backend.repository.ElectionVoterRepository;
+import com.voterow.backend.service.ElectionWorkflowService;
+import com.voterow.backend.service.AuditLogService;
+import com.voterow.backend.service.NotificationService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
@@ -18,10 +29,10 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/admin")
-@CrossOrigin(origins = "*")
 public class AdminController {
     
     private static final Logger logger = LoggerFactory.getLogger(AdminController.class);
@@ -35,7 +46,28 @@ public class AdminController {
     private ElectionRepository electionRepository;
     
     @Autowired
+    private CandidateRepository candidateRepository;
+    
+    @Autowired
+    private ElectionParticipantRepository electionParticipantRepository;
+    
+    @Autowired
+    private VoteRepository voteRepository;
+    
+    @Autowired
+    private ElectionVoterRepository electionVoterRepository;
+    
+    @Autowired
     private PasswordEncoder passwordEncoder;
+    
+    @Autowired
+    private ElectionWorkflowService electionWorkflowService;
+    
+    @Autowired
+    private AuditLogService auditLogService;
+    
+    @Autowired
+    private NotificationService notificationService;
     
     // Dashboard Overview
     @GetMapping("/dashboard/overview")
@@ -86,7 +118,7 @@ public class AdminController {
             return ResponseEntity.ok(voters);
             
         } catch (Exception e) {
-            System.err.println("Error fetching voters: " + e.getMessage());
+            logger.error("Error fetching voters", e);
             e.printStackTrace();
             
             // Return empty list on error
@@ -196,13 +228,17 @@ public class AdminController {
     // Export voters list as CSV
     @GetMapping("/voters/export")
     public ResponseEntity<String> exportVoters() {
-        // In a real app, this would generate CSV from database records
+        List<User> voters = userRepository.findByUserType(UserType.ROLE_VOTER);
         StringBuilder csv = new StringBuilder();
         csv.append("id,fullName,email,age,status,verified\n");
-        csv.append("2,John Doe,john@example.com,32,Active,Yes\n");
-        csv.append("4,Alice Johnson,alice@example.com,28,Active,Yes\n");
-        csv.append("5,Bob Wilson,bob@example.com,45,Inactive,No\n");
-        
+        for (User voter : voters) {
+            csv.append(voter.getId()).append(",")
+                .append(voter.getFullName()).append(",")
+                .append(voter.getEmail()).append(",")
+                .append(voter.getAge() != null ? voter.getAge() : "").append(",")
+                .append(Boolean.TRUE.equals(voter.getIsActive()) ? "Active" : "Inactive").append(",")
+                .append(Boolean.TRUE.equals(voter.getIsVerified()) ? "Yes" : "No").append("\n");
+        }
         return ResponseEntity
             .ok()
             .header("Content-Type", "text/csv")
@@ -210,26 +246,101 @@ public class AdminController {
             .body(csv.toString());
     }
     
-    // Delete voter
-    @DeleteMapping("/voters/{id}")
-    public ResponseEntity<Map<String, Object>> deleteVoter(@PathVariable Long id) {
+    // Test endpoint to verify controller is working
+    @GetMapping("/voters/{id}/test")
+    public ResponseEntity<Map<String, Object>> testVoterEndpoint(@PathVariable Long id) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("message", "Test endpoint working for voter ID: " + id);
+        response.put("timestamp", LocalDateTime.now().toString());
+        return ResponseEntity.ok(response);
+    }
+    
+    // Debug endpoint to check if DELETE mapping exists
+    @GetMapping("/debug/endpoints")
+    public ResponseEntity<Map<String, Object>> debugEndpoints() {
+        Map<String, Object> response = new HashMap<>();
+        response.put("message", "AdminController is active");
+        response.put("deleteEndpoint", "DELETE /api/admin/voters/{id} is mapped");
+        response.put("timestamp", LocalDateTime.now().toString());
+        return ResponseEntity.ok(response);
+    }
+    
+    // Alternative delete endpoint
+    @PostMapping("/voters/{id}/delete")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> deleteVoterAlt(@PathVariable Long id) {
+        logger.info("Alternative DELETE endpoint called for voter ID: {}", id);
         try {
-            if (userRepository.existsById(id)) {
-                userRepository.deleteById(id);
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", true);
-                response.put("message", "Voter deleted successfully");
-                System.out.println("Deleted voter with ID: " + id);
-                return ResponseEntity.ok(response);
-            } else {
+            Optional<User> userOpt = userRepository.findById(id);
+            if (!userOpt.isPresent()) {
                 Map<String, Object> response = new HashMap<>();
                 response.put("success", false);
                 response.put("message", "Voter not found");
                 return ResponseEntity.notFound().build();
             }
+            
+            User user = userOpt.get();
+            if (!UserType.ROLE_VOTER.equals(user.getUserType())) {
+                Map<String, Object> response = new HashMap<>();
+                response.put("success", false);
+                response.put("message", "User is not a voter");
+                return ResponseEntity.badRequest().body(response);
+            }
+            
+            userRepository.deleteById(id);
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "Voter deleted successfully");
+            return ResponseEntity.ok(response);
+            
         } catch (Exception e) {
-            System.err.println("Error deleting voter: " + e.getMessage());
-            e.printStackTrace();
+            logger.error("Error deleting voter: {}", e.getMessage());
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", "Failed to delete voter: " + e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
+    
+    // Delete voter
+    @DeleteMapping("/voters/{id}")
+    @Transactional
+    public ResponseEntity<Map<String, Object>> deleteVoter(@PathVariable Long id) {
+        logger.info("=== DELETE VOTER ENDPOINT CALLED ===");
+        logger.info("DELETE request received for voter ID: {}", id);
+        logger.info("Request mapping: /api/admin/voters/{}", id);
+        logger.info("Deleting voter with ID: {}", id);
+        try {
+            Optional<User> userOpt = userRepository.findById(id);
+            if (!userOpt.isPresent()) {
+                Map<String, Object> response = new HashMap<>();
+                response.put("success", false);
+                response.put("message", "Voter not found");
+                return ResponseEntity.notFound().build();
+            }
+            
+            User user = userOpt.get();
+            
+            // Check if user is actually a voter
+            if (!UserType.ROLE_VOTER.equals(user.getUserType())) {
+                Map<String, Object> response = new HashMap<>();
+                response.put("success", false);
+                response.put("message", "User is not a voter");
+                return ResponseEntity.badRequest().body(response);
+            }
+            
+            // Delete the user (cascade deletes will handle related records automatically)
+            userRepository.deleteById(id);
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "Voter deleted successfully");
+            logger.info("Successfully deleted voter with ID: {}", id);
+            return ResponseEntity.ok(response);
+            
+        } catch (Exception e) {
+            logger.error("Error deleting voter", e);
             Map<String, Object> response = new HashMap<>();
             response.put("success", false);
             response.put("message", "Failed to delete voter: " + e.getMessage());
@@ -281,11 +392,11 @@ public class AdminController {
             response.put("isActive", user.getIsActive());
             response.put("isVerified", user.getIsVerified());
             
-            System.out.println("Updated voter: " + user.getFullName());
+            logger.info("Updated voter: {}", user.getFullName());
             return ResponseEntity.ok(response);
             
         } catch (Exception e) {
-            System.err.println("Error updating voter: " + e.getMessage());
+            logger.error("Error updating voter", e);
             e.printStackTrace();
             Map<String, Object> response = new HashMap<>();
             response.put("success", false);
@@ -315,11 +426,11 @@ public class AdminController {
             response.put("message", "Voter verification status updated successfully");
             response.put("isVerified", user.getIsVerified());
             
-            System.out.println("Toggled verification for voter: " + user.getFullName() + " to " + isVerified);
+            logger.info("Toggled verification for voter: {} to {}", user.getFullName(), isVerified);
             return ResponseEntity.ok(response);
             
         } catch (Exception e) {
-            System.err.println("Error toggling voter verification: " + e.getMessage());
+            logger.error("Error toggling voter verification", e);
             e.printStackTrace();
             Map<String, Object> response = new HashMap<>();
             response.put("success", false);
@@ -349,11 +460,11 @@ public class AdminController {
             response.put("message", "Voter status updated successfully");
             response.put("isActive", user.getIsActive());
             
-            System.out.println("Toggled status for voter: " + user.getFullName() + " to " + (isActive ? "Active" : "Inactive"));
+            logger.info("Toggled status for voter: {} to {}", user.getFullName(), isActive ? "Active" : "Inactive");
             return ResponseEntity.ok(response);
             
         } catch (Exception e) {
-            System.err.println("Error toggling voter status: " + e.getMessage());
+            logger.error("Error toggling voter status", e);
             e.printStackTrace();
             Map<String, Object> response = new HashMap<>();
             response.put("success", false);
@@ -365,45 +476,47 @@ public class AdminController {
     @GetMapping("/candidates")
     public ResponseEntity<List<Map<String, Object>>> getCandidates() {
         try {
-            List<User> candidates = userRepository.findByUserType(UserType.ROLE_PARTICIPANT); // Temporary: using PARTICIPANT for candidates
-            List<Map<String, Object>> candidatesList = new ArrayList<>();
+            // Return candidates from User table (created by admin) and Candidate table (applications)
+            List<Map<String, Object>> result = new ArrayList<>();
             
-            System.out.println("Found " + candidates.size() + " candidates in database");
-            
-            for (User candidate : candidates) {
-                Map<String, Object> candidateMap = new HashMap<>();
-                candidateMap.put("id", candidate.getId());
-                candidateMap.put("name", candidate.getFullName());
-                candidateMap.put("party", candidate.getPartyName() != null ? candidate.getPartyName() : "Independent");
-                candidateMap.put("email", candidate.getEmail());
-                candidateMap.put("phone", candidate.getPhoneNumber());
-                
-                // Use isVerified to determine candidate approval status
-                String status;
-                if (candidate.getIsVerified() == null || !candidate.getIsVerified()) {
-                    status = "PENDING";
-                } else {
-                    status = "APPROVED";
-                }
-                candidateMap.put("status", status);
-                candidateMap.put("appliedDate", candidate.getCreatedAt().toString());
-                candidateMap.put("userId", candidate.getId()); // This is the user ID who applied as candidate
-                candidateMap.put("electionId", 1); // Default election ID - in real app, this would come from candidate application data
-                candidateMap.put("isActive", candidate.getIsActive());
-                candidateMap.put("registeredAt", candidate.getCreatedAt());
-                candidateMap.put("election", Map.of("title", "Presidential Election 2025")); // Mock election for now
-                candidateMap.put("symbolUrl", ""); // Empty for now
-                
-                System.out.println("Candidate: " + candidate.getFullName() + " - Status: " + status + " (isVerified: " + candidate.getIsVerified() + ")");
-                candidatesList.add(candidateMap);
+            // 1. Get candidates created directly by admin (User table with ROLE_PARTICIPANT)
+            List<User> userCandidates = userRepository.findByUserType(UserType.ROLE_PARTICIPANT);
+            for (User user : userCandidates) {
+                Map<String, Object> row = new HashMap<>();
+                row.put("id", user.getId());
+                row.put("userId", user.getId());
+                row.put("name", user.getFullName());
+                row.put("email", user.getEmail());
+                row.put("party", user.getPartyName() != null ? user.getPartyName() : "Independent");
+                row.put("phone", user.getPhoneNumber());
+                row.put("status", user.getIsVerified() ? "APPROVED" : "PENDING");
+                row.put("isVerified", user.getIsVerified());
+                row.put("submittedAt", user.getCreatedAt());
+                row.put("source", "admin_created");
+                result.add(row);
             }
             
-            System.out.println("Returning " + candidatesList.size() + " candidates to frontend");
-            
-            return ResponseEntity.ok(candidatesList);
+            // 2. Get candidate applications from Candidate table (user applications)
+            List<Candidate> applications = candidateRepository.findAll();
+            for (Candidate app : applications) {
+                Map<String, Object> row = new HashMap<>();
+                row.put("id", app.getId());
+                row.put("userId", app.getUser() != null ? app.getUser().getId() : null);
+                row.put("name", app.getUser() != null ? app.getUser().getFullName() : "");
+                row.put("email", app.getUser() != null ? app.getUser().getEmail() : "");
+                row.put("party", app.getPartyName());
+                row.put("electionId", app.getElection() != null ? app.getElection().getId() : null);
+                row.put("electionTitle", app.getElection() != null ? app.getElection().getTitle() : "");
+                row.put("status", app.getStatus() != null ? app.getStatus().name() : "PENDING");
+                row.put("submittedAt", app.getCreatedAt());
+                row.put("source", "user_application");
+                result.add(row);
+            }
+
+            logger.debug("Retrieved {} admin-created candidates and {} user applications", userCandidates.size(), applications.size());
+            return ResponseEntity.ok(result);
         } catch (Exception e) {
-            System.err.println("Error fetching candidates: " + e.getMessage());
-            e.printStackTrace();
+            logger.error("Error fetching candidates", e);
             return ResponseEntity.status(500).body(new ArrayList<>());
         }
     }
@@ -529,24 +642,34 @@ public class AdminController {
     
     // Delete candidate
     @DeleteMapping("/candidates/{id}")
+    @Transactional
     public ResponseEntity<Map<String, Object>> deleteCandidate(@PathVariable Long id) {
         try {
+            // Try Candidate table first
+            Optional<Candidate> candidateOpt = candidateRepository.findById(id);
+            if (candidateOpt.isPresent()) {
+                candidateRepository.deleteById(id);
+                Map<String, Object> response = new HashMap<>();
+                response.put("success", true);
+                response.put("message", "Candidate deleted successfully");
+                return ResponseEntity.ok(response);
+            }
+            
+            // Fallback to User table
             if (userRepository.existsById(id)) {
                 userRepository.deleteById(id);
                 Map<String, Object> response = new HashMap<>();
                 response.put("success", true);
                 response.put("message", "Candidate deleted successfully");
-                logger.info("Successfully deleted candidate with ID: {}", id);
                 return ResponseEntity.ok(response);
-            } else {
-                Map<String, Object> response = new HashMap<>();
-                response.put("success", false);
-                response.put("message", "Candidate not found");
-                return ResponseEntity.notFound().build();
             }
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", false);
+            response.put("message", "Candidate not found");
+            return ResponseEntity.notFound().build();
         } catch (Exception e) {
             logger.error("Error deleting candidate: {}", e.getMessage());
-            e.printStackTrace();
             Map<String, Object> response = new HashMap<>();
             response.put("success", false);
             response.put("message", "Failed to delete candidate: " + e.getMessage());
@@ -592,46 +715,68 @@ public class AdminController {
             @RequestBody Map<String, String> statusUpdate) {
         
         String newStatus = statusUpdate.get("status");
-        System.out.println("Updating status for candidate: " + candidateId + " to " + newStatus);
+        logger.info("Updating status for candidate ID: {} to status: {}", candidateId, newStatus);
         
         try {
-            // Find the candidate in database
-            Optional<User> candidateOpt = userRepository.findById(candidateId);
-            if (!candidateOpt.isPresent()) {
+            // Try to find in Candidate table first (new format)
+            Optional<Candidate> candidateOpt = candidateRepository.findById(candidateId);
+            if (candidateOpt.isPresent()) {
+                Candidate candidate = candidateOpt.get();
+                
+                if ("APPROVED".equals(newStatus)) {
+                    candidate.setStatus(Candidate.CandidateStatus.APPROVED);
+                    
+                    // Auto-assign to election when approved
+                    if (!electionParticipantRepository.existsByElectionIdAndCandidateId(
+                            candidate.getElection().getId(), candidate.getId())) {
+                        ElectionParticipant participant = new ElectionParticipant();
+                        participant.setElection(candidate.getElection());
+                        participant.setCandidate(candidate);
+                        electionParticipantRepository.save(participant);
+                        logger.info("Auto-assigned candidate {} to election {}", 
+                                candidate.getUser().getFullName(), candidate.getElection().getTitle());
+                    }
+                } else if ("REJECTED".equals(newStatus)) {
+                    candidate.setStatus(Candidate.CandidateStatus.REJECTED);
+                } else {
+                    candidate.setStatus(Candidate.CandidateStatus.PENDING);
+                }
+                
+                candidate.setUpdatedAt(LocalDateTime.now());
+                Candidate updatedCandidate = candidateRepository.save(candidate);
+                
+                Map<String, Object> result = new HashMap<>();
+                result.put("id", updatedCandidate.getId());
+                result.put("name", updatedCandidate.getUser().getFullName());
+                result.put("status", updatedCandidate.getStatus().toString());
+                result.put("updatedAt", updatedCandidate.getUpdatedAt().toString());
+                
+                return ResponseEntity.ok(result);
+            }
+            
+            // Fallback to User table (old format)
+            Optional<User> userOpt = userRepository.findById(candidateId);
+            if (!userOpt.isPresent()) {
                 Map<String, Object> errorResponse = new HashMap<>();
                 errorResponse.put("error", "Candidate not found");
-                errorResponse.put("message", "No candidate found with ID: " + candidateId);
-                return ResponseEntity.notFound().body(errorResponse);
+                return ResponseEntity.status(404).body(errorResponse);
             }
             
-            User candidate = candidateOpt.get();
+            User user = userOpt.get();
+            user.setIsVerified("APPROVED".equals(newStatus));
+            user.setUpdatedAt(LocalDateTime.now());
+            User updatedUser = userRepository.save(user);
             
-            // Update the isVerified field based on status
-            if ("APPROVED".equals(newStatus)) {
-                candidate.setIsVerified(true);
-                System.out.println("Approved candidate: " + candidate.getFullName());
-            } else if ("PENDING".equals(newStatus) || "REJECTED".equals(newStatus)) {
-                candidate.setIsVerified(false);
-                System.out.println("Set candidate status to " + newStatus + ": " + candidate.getFullName());
-            }
-            
-            candidate.setUpdatedAt(LocalDateTime.now());
-            
-            // Save to database
-            User updatedCandidate = userRepository.save(candidate);
-            
-            // Return updated candidate info
             Map<String, Object> result = new HashMap<>();
-            result.put("id", updatedCandidate.getId());
-            result.put("name", updatedCandidate.getFullName());
-            result.put("status", updatedCandidate.getIsVerified() ? "APPROVED" : "PENDING");
-            result.put("isVerified", updatedCandidate.getIsVerified());
-            result.put("updatedAt", updatedCandidate.getUpdatedAt().toString());
+            result.put("id", updatedUser.getId());
+            result.put("name", updatedUser.getFullName());
+            result.put("status", updatedUser.getIsVerified() ? "APPROVED" : "PENDING");
+            result.put("updatedAt", updatedUser.getUpdatedAt().toString());
             
-            System.out.println("Successfully updated candidate status in database");
             return ResponseEntity.ok(result);
+            
         } catch (Exception e) {
-            System.err.println("Error updating candidate status: " + e.getMessage());
+            logger.error("Error updating candidate status: {}", e.getMessage());
             e.printStackTrace();
             Map<String, Object> errorResponse = new HashMap<>();
             errorResponse.put("error", "Failed to update candidate status");
@@ -644,7 +789,14 @@ public class AdminController {
     @GetMapping("/elections")
     public ResponseEntity<List<Map<String, Object>>> getElections() {
         try {
+            logger.debug("Fetching elections from database");
+            // First try to get active elections, if none found, get all elections
             List<Election> elections = electionRepository.findByIsActiveTrueOrderByCreatedAtDesc();
+            if (elections.isEmpty()) {
+                logger.debug("No active elections found, fetching all elections");
+                elections = electionRepository.findAll();
+            }
+            logger.debug("Retrieved {} elections from database", elections.size());
             List<Map<String, Object>> electionsList = new ArrayList<>();
             
             for (Election election : elections) {
@@ -652,18 +804,33 @@ public class AdminController {
                 electionMap.put("id", election.getId());
                 electionMap.put("title", election.getTitle());
                 electionMap.put("description", election.getDescription());
-                electionMap.put("startDate", election.getStartDate().toString());
-                electionMap.put("endDate", election.getEndDate().toString());
-                electionMap.put("status", election.getStatus().toString());
-                electionMap.put("candidateCount", 0); // TODO: count actual candidates
-                electionMap.put("createdAt", election.getCreatedAt().toString());
+                electionMap.put("startDate", election.getStartDate() != null ? election.getStartDate().toString() : null);
+                electionMap.put("endDate", election.getEndDate() != null ? election.getEndDate().toString() : null);
+                electionMap.put("status", election.getStatus() != null ? election.getStatus().toString() : "DRAFT");
+                // Attach participants from Candidate table (APPROVED) to avoid EP table dependency
+                List<Long> participantIds;
+                try {
+                    List<Candidate> approved = candidateRepository.findByElectionIdAndStatus(
+                            election.getId(), Candidate.CandidateStatus.APPROVED);
+                    participantIds = approved.stream()
+                            .map(Candidate::getId)
+                            .toList();
+                } catch (Exception ex) {
+                    logger.warn("Failed to load approved candidates for election {}", election.getId());
+                    participantIds = new ArrayList<>();
+                }
+                electionMap.put("participants", participantIds);
+                electionMap.put("candidateCount", participantIds.size());
+                electionMap.put("createdAt", election.getCreatedAt() != null ? election.getCreatedAt().toString() : null);
                 electionMap.put("isActive", election.getIsActive());
+                // Frontend will pass voterId via header for vote-status enrichment; leave false by default
+                electionMap.put("hasVoted", false);
                 electionsList.add(electionMap);
             }
             
             return ResponseEntity.ok(electionsList);
         } catch (Exception e) {
-            System.err.println("Error fetching elections: " + e.getMessage());
+            logger.error("Error fetching elections", e);
             e.printStackTrace();
             return ResponseEntity.status(500).body(new ArrayList<>());
         }
@@ -671,7 +838,7 @@ public class AdminController {
     
     @PostMapping("/elections")
     public ResponseEntity<Map<String, Object>> createElection(@RequestBody Map<String, Object> electionData) {
-        System.out.println("Received election data: " + electionData);
+        logger.debug("Processing election creation request");
         
         try {
             // Create new election
@@ -684,20 +851,54 @@ public class AdminController {
             String endDateStr = (String) electionData.get("endDate");
             
             if (startDateStr != null && !startDateStr.isEmpty()) {
-                // If date includes 'T', it's already in datetime format
-                if (startDateStr.contains("T")) {
-                    election.setStartDate(LocalDateTime.parse(startDateStr));
-                } else {
-                    // If it's just a date, add time
-                    election.setStartDate(LocalDateTime.parse(startDateStr + "T00:00:00"));
+                try {
+                    // Handle ISO format with timezone (e.g., "2025-11-27T10:30:00+05:30" or "2025-11-27T10:30:00Z")
+                    if (startDateStr.contains("T")) {
+                        // Remove timezone offset if present and parse
+                        String dateWithoutTz = startDateStr;
+                        if (startDateStr.contains("+") || startDateStr.endsWith("Z")) {
+                            // Extract date-time part before timezone
+                            int tzIndex = startDateStr.lastIndexOf("+");
+                            if (tzIndex == -1) tzIndex = startDateStr.lastIndexOf("-");
+                            if (tzIndex > 10) { // Only if it's a timezone separator, not part of date
+                                dateWithoutTz = startDateStr.substring(0, tzIndex);
+                            } else if (startDateStr.endsWith("Z")) {
+                                dateWithoutTz = startDateStr.substring(0, startDateStr.length() - 1);
+                            }
+                        }
+                        election.setStartDate(LocalDateTime.parse(dateWithoutTz));
+                    } else {
+                        // If it's just a date, add time
+                        election.setStartDate(LocalDateTime.parse(startDateStr + "T00:00:00"));
+                    }
+                } catch (Exception e) {
+                    logger.error("Error parsing startDate: {}", startDateStr);
+                    throw new RuntimeException("Invalid start date format: " + startDateStr, e);
                 }
             }
             
             if (endDateStr != null && !endDateStr.isEmpty()) {
-                if (endDateStr.contains("T")) {
-                    election.setEndDate(LocalDateTime.parse(endDateStr));
-                } else {
-                    election.setEndDate(LocalDateTime.parse(endDateStr + "T23:59:59"));
+                try {
+                    // Handle ISO format with timezone
+                    if (endDateStr.contains("T")) {
+                        // Remove timezone offset if present and parse
+                        String dateWithoutTz = endDateStr;
+                        if (endDateStr.contains("+") || endDateStr.endsWith("Z")) {
+                            int tzIndex = endDateStr.lastIndexOf("+");
+                            if (tzIndex == -1) tzIndex = endDateStr.lastIndexOf("-");
+                            if (tzIndex > 10) {
+                                dateWithoutTz = endDateStr.substring(0, tzIndex);
+                            } else if (endDateStr.endsWith("Z")) {
+                                dateWithoutTz = endDateStr.substring(0, endDateStr.length() - 1);
+                            }
+                        }
+                        election.setEndDate(LocalDateTime.parse(dateWithoutTz));
+                    } else {
+                        election.setEndDate(LocalDateTime.parse(endDateStr + "T23:59:59"));
+                    }
+                } catch (Exception e) {
+                    logger.error("Error parsing endDate: {}", endDateStr);
+                    throw new RuntimeException("Invalid end date format: " + endDateStr, e);
                 }
             }
             
@@ -833,12 +1034,21 @@ public class AdminController {
     
     @DeleteMapping("/elections/{id}")
     public ResponseEntity<Map<String, String>> deleteElection(@PathVariable Long id) {
-        // In a real application, this would delete from database
-        Map<String, String> response = new HashMap<>();
-        response.put("message", "Election deleted successfully");
-        response.put("deletedId", id.toString());
-        
-        return ResponseEntity.ok(response);
+        try {
+            if (electionRepository.existsById(id)) {
+                electionRepository.deleteById(id);
+                Map<String, String> response = new HashMap<>();
+                response.put("message", "Election deleted successfully");
+                response.put("deletedId", id.toString());
+                return ResponseEntity.ok(response);
+            } else {
+                return ResponseEntity.notFound().build();
+            }
+        } catch (Exception e) {
+            Map<String, String> response = new HashMap<>();
+            response.put("error", "Failed to delete election: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
     }
     
     @PostMapping("/elections/{id}/start")
@@ -931,14 +1141,48 @@ public class AdminController {
     
     @PostMapping("/elections/candidates/assign")
     public ResponseEntity<Map<String, Object>> assignCandidatesToElection(@RequestBody Map<String, Object> assignmentData) {
-        // In a real application, this would assign candidates to an election in database
-        Map<String, Object> response = new HashMap<>();
-        response.put("electionId", assignmentData.get("electionId"));
-        response.put("candidateIds", assignmentData.get("candidateIds"));
-        response.put("assignedAt", java.time.LocalDateTime.now().toString());
-        response.put("message", "Candidates assigned successfully");
-        
-        return ResponseEntity.ok(response);
+        try {
+            Long electionId = Long.valueOf(assignmentData.get("electionId").toString());
+            @SuppressWarnings("unchecked")
+            List<Long> candidateIds = (List<Long>) assignmentData.get("candidateIds");
+            
+            Optional<Election> electionOpt = electionRepository.findById(electionId);
+            if (!electionOpt.isPresent()) {
+                Map<String, Object> errorResponse = new HashMap<>();
+                errorResponse.put("error", "Election not found");
+                return ResponseEntity.badRequest().body(errorResponse);
+            }
+            
+            Election election = electionOpt.get();
+            int assignedCount = 0;
+            
+            for (Long candidateId : candidateIds) {
+                Optional<Candidate> candidateOpt = candidateRepository.findById(candidateId);
+                if (candidateOpt.isPresent() && 
+                    !electionParticipantRepository.existsByElectionIdAndCandidateId(electionId, candidateId)) {
+                    
+                    ElectionParticipant participant = new ElectionParticipant();
+                    participant.setElection(election);
+                    participant.setCandidate(candidateOpt.get());
+                    electionParticipantRepository.save(participant);
+                    assignedCount++;
+                }
+            }
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("electionId", electionId);
+            response.put("assignedCount", assignedCount);
+            response.put("assignedAt", LocalDateTime.now().toString());
+            response.put("message", assignedCount + " candidates assigned successfully");
+            
+            return ResponseEntity.ok(response);
+            
+        } catch (Exception e) {
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("error", "Failed to assign candidates");
+            errorResponse.put("message", e.getMessage());
+            return ResponseEntity.status(500).body(errorResponse);
+        }
     }
     
     // System settings
@@ -963,14 +1207,86 @@ public class AdminController {
         return ResponseEntity.ok(logs);
     }
     
-    // Basic status endpoint
+    // Monitor live voting
+    @GetMapping("/elections/{id}/monitor")
+    public ResponseEntity<Map<String, Object>> monitorElection(@PathVariable Long id) {
+        try {
+            Map<String, Object> monitor = new HashMap<>();
+            monitor.put("electionId", id);
+            monitor.put("totalVotes", 0); // TODO: implement actual vote counting
+            monitor.put("activeVoters", 0);
+            monitor.put("lastVoteTime", LocalDateTime.now());
+            monitor.put("status", "ACTIVE");
+            return ResponseEntity.ok(monitor);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of("error", "Failed to get monitoring data"));
+        }
+    }
+    
+    // Get election results
+    @GetMapping("/elections/{id}/results")
+    public ResponseEntity<Map<String, Object>> getElectionResults(@PathVariable Long id) {
+        try {
+            Map<String, Object> results = new HashMap<>();
+            results.put("electionId", id);
+            results.put("totalVotes", 0);
+            results.put("candidates", new ArrayList<>());
+            results.put("winner", null);
+            results.put("publishedAt", LocalDateTime.now());
+            return ResponseEntity.ok(results);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of("error", "Failed to get results"));
+        }
+    }
+    
+    // Send voter credentials
+    @PostMapping("/voters/{id}/send-credentials")
+    public ResponseEntity<Map<String, Object>> sendVoterCredentials(@PathVariable Long id) {
+        try {
+            Optional<User> userOpt = userRepository.findById(id);
+            if (!userOpt.isPresent()) {
+                return ResponseEntity.notFound().build();
+            }
+            
+            User voter = userOpt.get();
+            // TODO: Implement actual email/SMS sending
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "Credentials sent to " + voter.getEmail());
+            response.put("sentAt", LocalDateTime.now());
+            
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(Map.of("error", "Failed to send credentials"));
+        }
+    }
+    
+    // System health check endpoint
     @GetMapping("/status")
-    public ResponseEntity<Map<String, String>> getStatus() {
-        Map<String, String> status = new HashMap<>();
-        status.put("status", "RUNNING");
-        status.put("version", "1.0.0");
-        status.put("uptime", "2 hours");
-        return ResponseEntity.ok(status);
+    public ResponseEntity<Map<String, Object>> getStatus() {
+        Map<String, Object> status = new HashMap<>();
+        try {
+            // Check database connectivity
+            long userCount = userRepository.count();
+            long electionCount = electionRepository.count();
+            long candidateCount = candidateRepository.count();
+            
+            status.put("status", "HEALTHY");
+            status.put("version", "1.0.0");
+            status.put("database", "CONNECTED");
+            status.put("userCount", userCount);
+            status.put("electionCount", electionCount);
+            status.put("candidateCount", candidateCount);
+            status.put("timestamp", LocalDateTime.now());
+            
+            return ResponseEntity.ok(status);
+        } catch (Exception e) {
+            status.put("status", "UNHEALTHY");
+            status.put("error", e.getMessage());
+            status.put("timestamp", LocalDateTime.now());
+            return ResponseEntity.status(500).body(status);
+        }
     }
     
     // Helper methods to create mock data
@@ -1008,6 +1324,135 @@ public class AdminController {
         return election;
     }
     
+    // ========== ELECTION MANAGEMENT ENDPOINTS ==========
+    
+    /**
+     * Assign candidates to election as participants
+     */
+    @PostMapping("/elections/{electionId}/assign-candidates")
+    public ResponseEntity<Map<String, Object>> assignCandidatesToElection(
+            @PathVariable Long electionId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            @SuppressWarnings("unchecked")
+            List<Integer> candidateIds = (List<Integer>) request.get("candidateIds");
+            
+            Optional<Election> electionOpt = electionRepository.findById(electionId);
+            if (!electionOpt.isPresent()) {
+                Map<String, Object> response = new HashMap<>();
+                response.put("error", "Election not found");
+                return ResponseEntity.badRequest().body(response);
+            }
+            
+            Election election = electionOpt.get();
+            List<String> assignedCandidates = new ArrayList<>();
+            
+            for (Integer candidateId : candidateIds) {
+                Optional<Candidate> candidateOpt = candidateRepository.findById(candidateId.longValue());
+                if (candidateOpt.isPresent() && candidateOpt.get().getStatus() == Candidate.CandidateStatus.APPROVED) {
+                    
+                    // Check if already assigned
+                    boolean alreadyAssigned = electionParticipantRepository
+                        .existsByElectionAndCandidate(election, candidateOpt.get());
+                        
+                    if (!alreadyAssigned) {
+                        ElectionParticipant participant = new ElectionParticipant();
+                        participant.setElection(election);
+                        participant.setCandidate(candidateOpt.get());
+                        participant.setAssignedAt(LocalDateTime.now());
+                        participant.setIsActive(true);
+                        
+                        electionParticipantRepository.save(participant);
+                        assignedCandidates.add(candidateOpt.get().getUser().getFullName());
+                    }
+                }
+            }
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "Candidates assigned to election successfully");
+            response.put("assignedCandidates", assignedCandidates);
+            response.put("electionTitle", election.getTitle());
+            
+            return ResponseEntity.ok(response);
+            
+        } catch (Exception e) {
+            logger.error("Error assigning candidates to election", e);
+            Map<String, Object> response = new HashMap<>();
+            response.put("error", "Failed to assign candidates to election");
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+    
+    /**
+     * Get election participants (assigned candidates)
+     */
+    @GetMapping("/elections/{electionId}/participants")
+    public ResponseEntity<List<Map<String, Object>>> getElectionParticipants(@PathVariable Long electionId) {
+        try {
+            Optional<Election> electionOpt = electionRepository.findById(electionId);
+            if (!electionOpt.isPresent()) {
+                return ResponseEntity.notFound().build();
+            }
+            
+            List<ElectionParticipant> participants = electionParticipantRepository
+                .findByElectionAndIsActiveTrue(electionOpt.get());
+            
+            List<Map<String, Object>> participantData = new ArrayList<>();
+            for (ElectionParticipant participant : participants) {
+                Map<String, Object> data = new HashMap<>();
+                data.put("id", participant.getId());
+                data.put("candidateId", participant.getCandidate().getId());
+                data.put("candidateName", participant.getCandidate().getUser().getFullName());
+                data.put("partyName", participant.getCandidate().getPartyName());
+                data.put("assignedAt", participant.getAssignedAt().toString());
+                data.put("isActive", participant.getIsActive());
+                participantData.add(data);
+            }
+            
+            return ResponseEntity.ok(participantData);
+            
+        } catch (Exception e) {
+            logger.error("Error fetching election participants", e);
+            return ResponseEntity.status(500).build();
+        }
+    }
+    
+    /**
+     * Remove candidate from election
+     */
+    @DeleteMapping("/elections/{electionId}/participants/{participantId}")
+    public ResponseEntity<Map<String, Object>> removeParticipant(
+            @PathVariable Long electionId, 
+            @PathVariable Long participantId) {
+        try {
+            Optional<ElectionParticipant> participantOpt = electionParticipantRepository.findById(participantId);
+            if (!participantOpt.isPresent()) {
+                Map<String, Object> response = new HashMap<>();
+                response.put("error", "Participant not found");
+                return ResponseEntity.badRequest().body(response);
+            }
+            
+            ElectionParticipant participant = participantOpt.get();
+            participant.setIsActive(false);
+            electionParticipantRepository.save(participant);
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "Candidate removed from election successfully");
+            
+            return ResponseEntity.ok(response);
+            
+        } catch (Exception e) {
+            logger.error("Error removing participant from election", e);
+            Map<String, Object> response = new HashMap<>();
+            response.put("error", "Failed to remove participant");
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+    
     private Map<String, Object> createMockAuditLog(Long id, String action, String user, String timestamp) {
         Map<String, Object> log = new HashMap<>();
         log.put("id", id);
@@ -1015,5 +1460,332 @@ public class AdminController {
         log.put("user", user);
         log.put("timestamp", timestamp);
         return log;
+    }
+    
+    // ========== ELECTION WORKFLOW ENDPOINTS ==========
+    
+    @PostMapping("/elections/{id}/open")
+    public ResponseEntity<Map<String, Object>> openElectionForVoting(@PathVariable Long id) {
+        try {
+            User admin = getCurrentAdmin(); // Implementation needed
+            Election election = electionWorkflowService.openElection(id, admin);
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "Election opened for voting");
+            response.put("electionId", election.getId());
+            response.put("status", election.getStatus().toString());
+            
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("error", "Failed to open election: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+
+    // ========== COMPLETE ELECTION WORKFLOW ENDPOINTS ==========
+    
+    /**
+     * STEP 1: Publish Election (DRAFT -> RESULTS_PUBLISHED/PUBLISHED state)
+     * Admin transitions an election from DRAFT to PUBLISHED state
+     */
+    @PostMapping("/elections/{id}/publish")
+    public ResponseEntity<Map<String, Object>> publishElection(@PathVariable Long id) {
+        try {
+            User admin = getCurrentAdmin();
+            if (admin == null) {
+                return ResponseEntity.status(401).body(Map.of("error", "Unauthorized"));
+            }
+            
+            Election election = electionWorkflowService.publishElection(id, admin);
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "Election published successfully");
+            response.put("electionId", election.getId());
+            response.put("electionTitle", election.getTitle());
+            response.put("status", election.getStatus().toString());
+            response.put("publishedAt", LocalDateTime.now().toString());
+            
+            System.out.println("Election " + election.getId() + " published by admin");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            System.err.println("Error publishing election: " + e.getMessage());
+            Map<String, Object> response = new HashMap<>();
+            response.put("error", "Failed to publish election");
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(400).body(response);
+        }
+    }
+
+    /**
+     * STEP 2: Start/Open Election for Voting (RESULTS_PUBLISHED/PUBLISHED -> ACTIVE)
+     * Admin opens the published election for voting
+     */
+    @PostMapping("/elections/{id}/activate")
+    public ResponseEntity<Map<String, Object>> activateElectionForVoting(@PathVariable Long id) {
+        try {
+            User admin = getCurrentAdmin();
+            if (admin == null) {
+                return ResponseEntity.status(401).body(Map.of("error", "Unauthorized"));
+            }
+            
+            Election election = electionRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Election not found"));
+            
+            // Validate election can be activated
+            if (election.getStatus() != Election.ElectionStatus.RESULTS_PUBLISHED && 
+                election.getStatus() != Election.ElectionStatus.DRAFT) {
+                throw new RuntimeException("Election must be in PUBLISHED or DRAFT state to activate. Current: " + election.getStatus());
+            }
+            
+            // Set to ACTIVE
+            election.setStatus(Election.ElectionStatus.ACTIVE);
+            election.setUpdatedAt(LocalDateTime.now());
+            Election savedElection = electionRepository.save(election);
+            
+            auditLogService.logAction(admin, "ACTIVATE_ELECTION", "Election", id, 
+                "Election activated for voting: " + election.getTitle());
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "Election activated for voting");
+            response.put("electionId", savedElection.getId());
+            response.put("status", "ACTIVE");
+            response.put("activatedAt", LocalDateTime.now().toString());
+            
+            System.out.println("Election " + id + " activated for voting");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            System.err.println("Error activating election: " + e.getMessage());
+            Map<String, Object> response = new HashMap<>();
+            response.put("error", "Failed to activate election");
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(400).body(response);
+        }
+    }
+
+    /**
+     * STEP 3: Close Election (ACTIVE -> COMPLETED)
+     * Admin closes the election after voting period ends
+     */
+    @PostMapping("/elections/{id}/close")
+    public ResponseEntity<Map<String, Object>> closeElection(@PathVariable Long id) {
+        try {
+            User admin = getCurrentAdmin();
+            if (admin == null) {
+                return ResponseEntity.status(401).body(Map.of("error", "Unauthorized"));
+            }
+            
+            Election election = electionRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Election not found"));
+            
+            if (election.getStatus() != Election.ElectionStatus.ACTIVE) {
+                throw new RuntimeException("Only ACTIVE elections can be closed. Current: " + election.getStatus());
+            }
+            
+            election.setStatus(Election.ElectionStatus.COMPLETED);
+            election.setUpdatedAt(LocalDateTime.now());
+            Election savedElection = electionRepository.save(election);
+            
+            auditLogService.logAction(admin, "CLOSE_ELECTION", "Election", id, 
+                "Election closed: " + election.getTitle());
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "Election closed successfully");
+            response.put("electionId", savedElection.getId());
+            response.put("status", "COMPLETED");
+            response.put("closedAt", LocalDateTime.now().toString());
+            
+            System.out.println("Election " + id + " closed");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            System.err.println("Error closing election: " + e.getMessage());
+            Map<String, Object> response = new HashMap<>();
+            response.put("error", "Failed to close election");
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(400).body(response);
+        }
+    }
+
+    /**
+     * STEP 4: Calculate and Get Election Results
+     * Calculate vote tallies after election is closed
+     */
+    @GetMapping("/elections/{id}/results/calculate")
+    public ResponseEntity<Map<String, Object>> calculateResults(@PathVariable Long id) {
+        try {
+            User admin = getCurrentAdmin();
+            if (admin == null) {
+                return ResponseEntity.status(401).body(Map.of("error", "Unauthorized"));
+            }
+            
+            Map<String, Object> results = electionWorkflowService.calculateElectionResults(id);
+            
+            auditLogService.logAction(admin, "CALCULATE_RESULTS", "Election", id, 
+                "Results calculated for election");
+            
+            return ResponseEntity.ok(results);
+        } catch (Exception e) {
+            System.err.println("Error calculating results: " + e.getMessage());
+            Map<String, Object> response = new HashMap<>();
+            response.put("error", "Failed to calculate results");
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(400).body(response);
+        }
+    }
+
+    /**
+     * STEP 5: Publish Results (COMPLETED -> RESULTS_PUBLISHED)
+     * Admin publishes the calculated results
+     */
+    @PostMapping("/elections/{id}/publish-results")
+    public ResponseEntity<Map<String, Object>> publishResults(@PathVariable Long id) {
+        try {
+            User admin = getCurrentAdmin();
+            if (admin == null) {
+                return ResponseEntity.status(401).body(Map.of("error", "Unauthorized"));
+            }
+            
+            Election election = electionRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Election not found"));
+            
+            if (election.getStatus() != Election.ElectionStatus.COMPLETED) {
+                throw new RuntimeException("Only COMPLETED elections can publish results. Current: " + election.getStatus());
+            }
+            
+            // Set status to RESULTS_PUBLISHED
+            election.setStatus(Election.ElectionStatus.RESULTS_PUBLISHED);
+            election.setUpdatedAt(LocalDateTime.now());
+            Election savedElection = electionRepository.save(election);
+            
+            // Notify all participants about results
+            List<Candidate> candidates = candidateRepository.findByElectionIdAndStatus(id, Candidate.CandidateStatus.APPROVED);
+            for (Candidate candidate : candidates) {
+                if (candidate.getStatus() == Candidate.CandidateStatus.APPROVED) {
+                    notificationService.sendElectionNotification(
+                        candidate.getUser(),
+                        "Election Results Published",
+                        "Results for election '" + election.getTitle() + "' have been published",
+                        "RESULTS_PUBLISHED"
+                    );
+                }
+            }
+            
+            auditLogService.logAction(admin, "PUBLISH_RESULTS", "Election", id, 
+                "Results published for election: " + election.getTitle());
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("message", "Election results published successfully");
+            response.put("electionId", savedElection.getId());
+            response.put("status", "RESULTS_PUBLISHED");
+            response.put("publishedAt", LocalDateTime.now().toString());
+            
+            System.out.println("Results published for election " + id);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            System.err.println("Error publishing results: " + e.getMessage());
+            Map<String, Object> response = new HashMap<>();
+            response.put("error", "Failed to publish results");
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(400).body(response);
+        }
+    }
+
+    /**
+     * Get Eligible Voters for an Election
+     * Lists all voters who meet the eligibility criteria
+     */
+    @GetMapping("/elections/{id}/eligible-voters")
+    public ResponseEntity<Map<String, Object>> getEligibleVoters(@PathVariable Long id) {
+        try {
+            Election election = electionRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Election not found"));
+            
+            List<User> eligibleVoters = electionWorkflowService.getEligibleVoters(id);
+            
+            List<Map<String, Object>> voterData = new ArrayList<>();
+            for (User voter : eligibleVoters) {
+                Map<String, Object> data = new HashMap<>();
+                data.put("id", voter.getId());
+                data.put("name", voter.getFullName());
+                data.put("email", voter.getEmail());
+                data.put("age", voter.getAge());
+                data.put("isVerified", voter.getIsVerified());
+                voterData.add(data);
+            }
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("electionId", id);
+            response.put("electionTitle", election.getTitle());
+            response.put("totalEligibleVoters", voterData.size());
+            response.put("voters", voterData);
+            
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            System.err.println("Error fetching eligible voters: " + e.getMessage());
+            Map<String, Object> response = new HashMap<>();
+            response.put("error", "Failed to fetch eligible voters");
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(400).body(response);
+        }
+    }
+
+    /**
+     * Get Vote Count for an Election (Real-time monitoring)
+     */
+    @GetMapping("/elections/{id}/vote-count")
+    public ResponseEntity<Map<String, Object>> getVoteCount(@PathVariable Long id) {
+        try {
+            Election election = electionRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Election not found"));
+            
+            List<Vote> allVotes = voteRepository.findByElection(election);
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("electionId", id);
+            response.put("electionTitle", election.getTitle());
+            response.put("totalVotes", allVotes.size());
+            response.put("electionStatus", election.getStatus().toString());
+            response.put("lastUpdated", LocalDateTime.now().toString());
+            
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            System.err.println("Error fetching vote count: " + e.getMessage());
+            Map<String, Object> response = new HashMap<>();
+            response.put("error", "Failed to fetch vote count");
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(400).body(response);
+        }
+    }
+
+
+    @GetMapping("/elections/{id}/eligibility")
+    public ResponseEntity<Map<String, Object>> checkVoterEligibility(@PathVariable Long id, @RequestParam Long voterId) {
+        try {
+            User voter = userRepository.findById(voterId).orElseThrow(() -> new RuntimeException("Voter not found"));
+            Election election = electionRepository.findById(id).orElseThrow(() -> new RuntimeException("Election not found"));
+            
+            boolean eligible = electionWorkflowService.validateVoterEligibility(voter, election);
+            
+            Map<String, Object> response = new HashMap<>();
+            response.put("eligible", eligible);
+            response.put("voterId", voterId);
+            response.put("electionId", id);
+            
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("error", "Failed to check eligibility: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+    
+    private User getCurrentAdmin() {
+        // Placeholder - implement proper admin user retrieval
+        return userRepository.findByEmail("admin@voterow.com").orElse(null);
     }
 }

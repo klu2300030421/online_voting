@@ -1,0 +1,56 @@
+services:
+  # 1. Database Service (MySQL)
+  db:
+    image: mysql:8.0
+    container_name: voterow-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: voterow_db
+      MYSQL_ROOT_PASSWORD: Root
+    volumes:
+      - db_data:/var/lib/mysql
+    ports:
+      - "3307:3306"   # Host:Container
+    networks:
+      - voterow-net
+
+  # 2. Backend Service (Spring Boot)
+  backend:
+    build:
+      context: ./backend
+    container_name: voterow-backend
+    restart: on-failure
+    depends_on:
+      - db
+    ports:
+      - "8086:8086"
+    environment:
+      SERVER_PORT: 8086
+      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/voterow_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: Root
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+    networks:
+      - voterow-net
+
+  # 3. Frontend Service (React/Vite + Nginx)
+  frontend:
+    build:
+      context: ./voterow
+    container_name: voterow-frontend
+    restart: on-failure
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+    networks:
+      - voterow-net
+
+# Shared Network
+networks:
+  voterow-net:
+    driver: bridge
+
+# Persistent Volume for MySQL
+volumes:
+  db_data:

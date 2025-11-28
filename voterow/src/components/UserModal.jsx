@@ -160,6 +160,7 @@ const UserModal = ({ user, isOpen, onClose, onSave, title }) => {
                             onChange={handleChange}
                             className={errors.password ? 'error' : ''}
                             placeholder={user ? "Enter new password (optional)" : "Enter password"}
+                            autocomplete={user ? "new-password" : "current-password"}
                         />
                         {errors.password && <div className="error-message">{errors.password}</div>}
                     </div>

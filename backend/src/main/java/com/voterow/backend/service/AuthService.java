@@ -62,6 +62,37 @@ public class AuthService {
         return userRepository.findByEmail(email).orElse(null);
     }
 
+    public User updateLastLogin(String email) {
+        User user = userRepository.findByEmail(email).orElse(null);
+        if (user != null) {
+            user.setLastLoginAt(LocalDateTime.now());
+            return userRepository.save(user);
+        }
+        return null;
+    }
+
+    public User createAdminUser(String email, String password, String fullName) {
+        // Check if admin already exists
+        if (userRepository.findByEmail(email).isPresent()) {
+            throw new IllegalStateException("Admin user already exists with email: " + email);
+        }
+
+        User admin = new User();
+        admin.setFullName(fullName);
+        admin.setEmail(email);
+        admin.setPassword(passwordEncoder.encode(password));
+        admin.setAge(30);
+        admin.setUserType(UserType.ROLE_ADMIN);
+        admin.setAdminRole(com.voterow.backend.model.AdminRole.SUPER_ADMIN);
+        admin.setCreatedAt(LocalDateTime.now());
+        admin.setUpdatedAt(LocalDateTime.now());
+        admin.setIsActive(true);
+        admin.setIsVerified(true);
+        admin.setTwoFactorEnabled(false);
+        
+        return userRepository.save(admin);
+    }
+
     public User updateUserProfile(String email, UpdateProfileRequest updateRequest) {
         User user = userRepository.findByEmail(email)
             .orElseThrow(() -> new IllegalArgumentException("User not found with email: " + email));
@@ -85,6 +116,10 @@ public class AuthService {
         
         if (updateRequest.getAddress() != null) {
             user.setAddress(updateRequest.getAddress().trim().isEmpty() ? null : updateRequest.getAddress().trim());
+        }
+        
+        if (updateRequest.getPartyName() != null) {
+            user.setPartyName(updateRequest.getPartyName().trim().isEmpty() ? null : updateRequest.getPartyName().trim());
         }
         
         user.setUpdatedAt(LocalDateTime.now());

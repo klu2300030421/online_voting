@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard';
 import Results from './pages/Results';
 import Profile from './pages/Profile';
 import { initializeData } from './data/mockData';
+import secureStorage from './utils/secureStorage';
 
 function App() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -19,32 +20,40 @@ function App() {
     initializeData();
 
     // Check if there's a saved user session and restore it
-    const savedUser = localStorage.getItem('voterow_currentUser');
+    const savedUser = secureStorage.getUser();
     if (savedUser) {
-      try {
-        const user = JSON.parse(savedUser);
-        setCurrentUser(user);
-        console.log('Restored user session:', user.email);
-      } catch (error) {
-        console.error('Error parsing saved user session:', error);
-        localStorage.removeItem('voterow_currentUser');
-      }
+      setCurrentUser(savedUser);
+      console.log('Restored user session:', savedUser.email);
     } else {
       console.log('No saved user session found');
     }
   }, []);
 
-  const handleLogin = (user) => {
-    // Persist login to localStorage for session continuity
-    localStorage.setItem('voterow_currentUser', JSON.stringify(user));
+  const handleLogin = (loginResponse) => {
+    // Handle both old format (direct user) and new format (user + token)
+    let user, token;
+    
+    if (loginResponse.user && loginResponse.token) {
+      // New JWT format
+      user = loginResponse.user;
+      token = loginResponse.token;
+      secureStorage.setToken(token);
+    } else {
+      // Old format - direct user object
+      user = loginResponse;
+    }
+    
+    // Store user securely
+    secureStorage.setUser(user);
+    
     setCurrentUser(user);
     navigate('/dashboard');
     console.log('User logged in:', user.email);
   };
 
   const handleLogout = () => {
-    // Clear both state and any potential localStorage data
-    localStorage.removeItem('voterow_currentUser');
+    // Clear secure storage
+    secureStorage.clear();
     setCurrentUser(null);
     navigate('/login');
     console.log('User logged out');
@@ -52,15 +61,8 @@ function App() {
   
   const handleUpdateUser = (updatedUser) => {
       setCurrentUser(updatedUser);
-      // Persist updated user session
-      localStorage.setItem('voterow_currentUser', JSON.stringify(updatedUser));
-      // Update in mock users data
-      const users = JSON.parse(localStorage.getItem('voterow_users')) || [];
-      const userIndex = users.findIndex(u => u.id === updatedUser.id);
-      if (userIndex !== -1) {
-          users[userIndex] = updatedUser;
-          localStorage.setItem('voterow_users', JSON.stringify(users));
-      }
+      // Persist updated user session securely
+      secureStorage.setUser(updatedUser);
       console.log('User profile updated:', updatedUser.email);
   }
 

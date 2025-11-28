@@ -1,31 +1,27 @@
 package com.voterow.backend.repository;
 
 import com.voterow.backend.model.Notification;
-import com.voterow.backend.model.Election;
+import com.voterow.backend.model.User;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
-import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
 public interface NotificationRepository extends JpaRepository<Notification, Long> {
     
-    List<Notification> findByStatusOrderByCreatedAtDesc(Notification.NotificationStatus status);
+    List<Notification> findByUserOrderByCreatedAtDesc(User user);
     
-    List<Notification> findByElectionOrderByCreatedAtDesc(Election election);
+    List<Notification> findByUserAndIsReadFalseOrderByCreatedAtDesc(User user);
     
-    List<Notification> findByTypeOrderByCreatedAtDesc(Notification.NotificationType type);
+    long countByUserAndIsReadFalse(User user);
     
-    @Query("SELECT n FROM Notification n WHERE n.createdAt BETWEEN :startDate AND :endDate ORDER BY n.createdAt DESC")
-    List<Notification> findByCreatedAtBetween(@Param("startDate") LocalDateTime startDate, 
-                                            @Param("endDate") LocalDateTime endDate);
+    List<Notification> findByUser(User user);
     
-    @Query("SELECT COUNT(n) FROM Notification n WHERE n.status = :status")
-    Long countByStatus(@Param("status") Notification.NotificationStatus status);
+    // Legacy methods for backward compatibility
+    List<Notification> findByUserIdOrderByCreatedAtDesc(Long userId);
     
-    @Query("SELECT n FROM Notification n WHERE n.status = 'PENDING' AND n.createdAt < :cutoffTime")
-    List<Notification> findPendingNotificationsOlderThan(@Param("cutoffTime") LocalDateTime cutoffTime);
+    List<Notification> findByUserIdAndIsReadFalse(Long userId);
+    
+    long countByUserIdAndIsReadFalse(Long userId);
 }

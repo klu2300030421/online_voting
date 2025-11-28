@@ -1,63 +1,79 @@
 package com.voterow.backend.model;
 
 import jakarta.persistence.*;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "notifications")
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
 public class Notification {
     
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
     
-    @Column(nullable = false, length = 200)
+    @ManyToOne
+    @JoinColumn(name = "user_id")
+    private User user;
+    
+    @Column(name = "title")
     private String title;
     
-    @Column(nullable = false, length = 1000)
+    @Column(name = "message", columnDefinition = "TEXT")
     private String message;
     
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
-    private NotificationType type;
+    @Column(name = "type")
+    private NotificationType notificationType;
     
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
-    private NotificationStatus status = NotificationStatus.PENDING;
+    @Column(name = "priority")
+    private Priority priority = Priority.NORMAL;
     
-    @Column(length = 15)
-    private String recipientPhone;
+    @Column(name = "is_read")
+    private Boolean isRead = false;
     
-    @Column(length = 100)
-    private String recipientEmail;
+    @Column(name = "read_at")
+    private LocalDateTime readAt;
     
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "election_id")
-    private Election election;
-    
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "sent_by")
-    private User sentBy;
-    
-    @Column(nullable = false)
+    @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
     
-    private LocalDateTime sentAt;
-    
-    @Column(length = 500)
-    private String errorMessage;
-    
     public enum NotificationType {
-        SMS, EMAIL, BOTH
+        ELECTION_ANNOUNCEMENT, CANDIDATE_REGISTRATION, VOTING_REMINDER, RESULT_ANNOUNCEMENT, GENERAL
     }
     
-    public enum NotificationStatus {
-        PENDING, SENT, FAILED, CANCELLED
+    public enum Priority {
+        LOW, NORMAL, HIGH, URGENT
     }
+
+    // Constructors
+    public Notification() {}
+
+    // Getters and Setters
+    public Long getId() { return id; }
+    public void setId(Long id) { this.id = id; }
+    
+    public User getUser() { return user; }
+    public void setUser(User user) { this.user = user; }
+    
+    public String getTitle() { return title; }
+    public void setTitle(String title) { this.title = title; }
+    
+    public String getMessage() { return message; }
+    public void setMessage(String message) { this.message = message; }
+    
+    public NotificationType getNotificationType() { return notificationType; }
+    public void setNotificationType(NotificationType notificationType) { this.notificationType = notificationType; }
+    
+    public Priority getPriority() { return priority; }
+    public void setPriority(Priority priority) { this.priority = priority; }
+    
+    public Boolean getIsRead() { return isRead; }
+    public void setIsRead(Boolean isRead) { this.isRead = isRead; }
+    
+    public LocalDateTime getReadAt() { return readAt; }
+    public void setReadAt(LocalDateTime readAt) { this.readAt = readAt; }
+    
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 }

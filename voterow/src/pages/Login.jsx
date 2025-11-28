@@ -14,8 +14,9 @@ const Login = ({ onLogin }) => {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://localhost:8081/api/auth/login', {
+  const response = await fetch('http://localhost:8083/api/auth/login', {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
         },
@@ -26,8 +27,12 @@ const Login = ({ onLogin }) => {
       });
 
       if (response.ok) {
-        // Login successful, parse user info directly from login response
-        const userInfo = await response.json();
+        // Login successful, parse response with JWT token and user info
+        const loginResponse = await response.json();
+        
+        // Check if response has new JWT format or old format
+        const userInfo = loginResponse.user || loginResponse;
+        const token = loginResponse.token;
         
         // Map backend user types to frontend display types
         let frontendUserType = userInfo.userType;
@@ -58,13 +63,20 @@ const Login = ({ onLogin }) => {
           isActive: userInfo.isActive,
           isVerified: userInfo.isVerified
         };
-        onLogin(user);
+        
+        // Pass the complete login response (with token) to onLogin
+        if (token) {
+          onLogin({ user, token });
+        } else {
+          onLogin(user); // Fallback for old format
+        }
       } else {
         const errorData = await response.text();
         setError(errorData || 'Invalid email or password.');
       }
     } catch (err) {
-      setError('Network error. Please check if the backend server is running.');
+      console.error('Login error:', err);
+  setError('Network error. Please check if the backend server is running on port 8083.');
     } finally {
       setIsLoading(false);
     }
@@ -83,6 +95,7 @@ const Login = ({ onLogin }) => {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
+            autoComplete="username"
           />
         </div>
         <div className="form-group">
@@ -93,6 +106,7 @@ const Login = ({ onLogin }) => {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
+            autoComplete="current-password"
           />
         </div>
         <button type="submit" className="btn btn-primary" style={{ width: '100%' }} disabled={isLoading}>

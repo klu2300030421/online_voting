@@ -422,6 +422,12 @@
   color: #e74c3c;
 }
 
+.alert-warning {
+  background: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  color: #856404;
+}
+
 /* Profile Sections */
 .profile-sections {
   display: flex;
@@ -540,6 +546,11 @@ textarea {
 .upload-area svg {
   font-size: 2rem;
   margin-bottom: 10px;
+}
+
+.upload-area.large {
+  width: 240px;
+  height: 200px;
 }
 
 .image-preview {
@@ -796,15 +807,79 @@ table.table tbody tr:last-child td {
   gap: 25px;
 }
 
+.campaign-section {
+  margin-bottom: 30px;
+  padding: 20px;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  background: white;
+}
+
+/* Party Details Form */
+.party-details-form {
+  background: white;
+  border-radius: 8px;
+  padding: 1.5rem;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.form-group label {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: #333;
+}
+
+.form-input {
+  padding: 0.75rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 1rem;
+  transition: border-color 0.2s;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: #5b2e8f;
+  box-shadow: 0 0 0 2px rgba(91, 46, 143, 0.1);
+}
+
+.symbol-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.form-actions {
+  margin-top: 1rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.campaign-section h4 {
+  margin: 0 0 20px;
+  color: #2c3e50;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1.1rem;
+}
+
 .manifesto-upload {
   display: flex;
   gap: 20px;
   flex-wrap: wrap;
-}
-
-.upload-area.large {
-  width: 240px;
-  height: 200px;
 }
 
 .manifesto-preview {
@@ -819,6 +894,24 @@ table.table tbody tr:last-child td {
 .manifesto-preview h6 {
   margin: 0 0 15px;
   color: #34495e;
+}
+
+.manifesto-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid #eee;
+}
+
+.manifesto-item:last-child {
+  border-bottom: none;
+}
+
+.manifesto-item p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #2c3e50;
 }
 
 .manifesto-actions {
@@ -896,6 +989,7 @@ table.table tbody tr:last-child td {
   color: #7f8c8d;
   cursor: pointer;
   transition: all 0.2s ease;
+  position: relative;
 }
 
 .material-upload:hover {
@@ -906,6 +1000,76 @@ table.table tbody tr:last-child td {
 .material-upload svg {
   font-size: 1.5rem;
   margin-bottom: 10px;
+}
+
+.material-upload input[type="file"] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* Uploaded Materials */
+.uploaded-materials {
+  margin-top: 25px;
+}
+
+.uploaded-materials h6 {
+  margin: 0 0 15px;
+  color: #34495e;
+  font-size: 1rem;
+}
+
+.materials-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 15px;
+}
+
+.material-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  background: white;
+  transition: all 0.2s ease;
+}
+
+.material-item:hover {
+  border-color: #3498db;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.material-info h6 {
+  margin: 0 0 5px;
+  font-size: 0.95rem;
+  color: #2c3e50;
+}
+
+.material-info p {
+  margin: 2px 0;
+  font-size: 0.8rem;
+  color: #7f8c8d;
+}
+
+.material-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 0.8rem;
+  color: #7f8c8d;
+}
+
+/* Header Actions */
+.header-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
 }
 
 /* Notifications Section */

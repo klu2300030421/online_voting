@@ -22,8 +22,9 @@ const Signup = ({ onLogin }) => {
         backendUserType = 'PARTICIPANT';
       }
 
-      const response = await fetch('http://localhost:8081/api/auth/signup', {
+  const response = await fetch('http://localhost:8083/api/auth/signup', {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
         },
@@ -38,8 +39,9 @@ const Signup = ({ onLogin }) => {
 
       if (response.ok) {
         // Registration successful, now try to login
-        const loginResponse = await fetch('http://localhost:8081/api/auth/login', {
+  const loginResponse = await fetch('http://localhost:8083/api/auth/login', {
           method: 'POST',
+          credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
           },
@@ -86,7 +88,8 @@ const Signup = ({ onLogin }) => {
         setError(errorData || 'Registration failed. Please try again.');
       }
     } catch (err) {
-      setError('Network error. Please check if the backend server is running.');
+      console.error('Signup error:', err);
+  setError('Network error. Please check if the backend server is running on port 8083.');
     } finally {
       setIsLoading(false);
     }
@@ -111,7 +114,7 @@ const Signup = ({ onLogin }) => {
         </div>
         <div className="form-group">
           <label htmlFor="password">Password</label>
-          <input type="password" id="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength="8" />
+          <input type="password" id="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength="8" autocomplete="new-password" />
         </div>
         <div className="form-group">
           <label htmlFor="userType">Register as</label>
