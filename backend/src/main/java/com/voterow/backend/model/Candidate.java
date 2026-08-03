@@ -16,7 +16,7 @@ public class Candidate {
     private User user;
     
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "election_id", nullable = false)
+    @JoinColumn(name = "election_id", nullable = true)
     private Election election;
     
     @Column(nullable = false, length = 100)

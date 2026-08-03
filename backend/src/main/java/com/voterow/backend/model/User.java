@@ -2,6 +2,9 @@ package com.voterow.backend.model;
 
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.ArrayList;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 @Entity
 @Table(name = "users")
@@ -59,6 +62,11 @@ public class User {
     private LocalDateTime updatedAt;
     
     private LocalDateTime lastLoginAt;
+    
+    // One-to-many relationships - simplified to avoid schema issues
+    @OneToMany(mappedBy = "voter", fetch = FetchType.LAZY)
+    @JsonIgnore
+    private List<Vote> votes = new ArrayList<>();
 
     // Constructors
     public User() {}
@@ -120,4 +128,9 @@ public class User {
 
     public LocalDateTime getLastLoginAt() { return lastLoginAt; }
     public void setLastLoginAt(LocalDateTime lastLoginAt) { this.lastLoginAt = lastLoginAt; }
+    
+    public List<Vote> getVotes() { return votes; }
+    public void setVotes(List<Vote> votes) { this.votes = votes; }
+    
+
 }

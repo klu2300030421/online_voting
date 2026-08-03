@@ -7,10 +7,12 @@ import {
 } from 'react-icons/fa';
 import './AdminDashboard.css';
 import UserModal from './UserModal';
+import ErrorBoundary from './ErrorBoundary';
+import secureStorage from '../utils/secureStorage';
 
-// Centralized API base URL. Configure via VITE_API_BASE_URL, fallback to Spring Boot port 8081
-const BASE_API_URL = import.meta.env?.VITE_API_BASE_URL || 'http://localhost:8081';
-const INCLUDE_CREDENTIALS = (import.meta.env?.VITE_INCLUDE_CREDENTIALS || 'false') === 'true';
+// Centralized API base URL. Uses Vite proxy in dev (empty string), override via VITE_API_BASE_URL in prod.
+const BASE_API_URL = import.meta.env?.VITE_API_BASE_URL || '';
+const INCLUDE_CREDENTIALS = false;
 
 // URL validation function
 const isValidUrl = (url) => {
@@ -23,17 +25,6 @@ const isValidUrl = (url) => {
 };
 
 const AdminDashboard = ({ user, onUpdateUser }) => {
-  // Guard clause for undefined user
-  if (!user) {
-    return (
-      <div className="admin-dashboard">
-        <div className="loading-message">
-          <p>Loading admin data...</p>
-        </div>
-      </div>
-    );
-  }
-
   const [activeTab, setActiveTab] = useState('home');
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState({
@@ -80,6 +71,18 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
     { id: 'settings', label: 'System Settings', icon: FaCog }
   ];
 
+  // Helper function to get headers with JWT token
+  const getAuthHeaders = (includeContentType = true, additionalHeaders = {}) => {
+    const token = secureStorage.getToken();
+    return {
+      ...(includeContentType ? { 'Content-Type': 'application/json' } : {}),
+      'Cache-Control': 'no-cache, no-store',
+      'Pragma': 'no-cache',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      ...additionalHeaders
+    };
+  };
+
   // API call functions
   const apiCall = async (endpoint, options = {}) => {
     try {
@@ -90,24 +93,15 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
         throw new Error('Invalid URL detected');
       }
       
-      console.log(`AdminDashboard: Making API call to ${endpoint}`, options);
-      console.log(`AdminDashboard: Full URL: ${fullUrl}`);
-      console.log(`AdminDashboard: BASE_API_URL: ${BASE_API_URL}`);
-      console.log(`AdminDashboard: INCLUDE_CREDENTIALS: ${INCLUDE_CREDENTIALS}`);
-      
-      // Check if body contains binary data that might cause base64 issues
-      if (options.body) {
-        console.log('AdminDashboard: Request body type:', typeof options.body);
-        console.log('AdminDashboard: Is FormData:', options.body instanceof FormData);
-        if (options.body instanceof FormData) {
-          console.log('AdminDashboard: FormData entries:', Array.from(options.body.entries()));
-        }
-      }
+      // Reduced console logging to prevent fluctuations
+      // console.log(`AdminDashboard: Making API call to ${endpoint}`, options);
       
       // Add cache-busting parameter to avoid cached responses
       const cacheBuster = `?_cb=${Date.now()}`;
       const finalUrl = `${fullUrl}${cacheBuster}`;
-      console.log(`AdminDashboard: Final URL with cache buster: ${finalUrl}`);
+      
+      // Get JWT token from secure storage
+      const token = secureStorage.getToken();
       
       const fetchOptions = {
         ...options,
@@ -118,28 +112,91 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
           ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
           'Cache-Control': 'no-cache, no-store',
           'Pragma': 'no-cache',
+          // Add Authorization header with JWT token if available
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
           ...options.headers
         }
       };
       
-      console.log(`AdminDashboard: Fetch options:`, fetchOptions);
+      // console.log(`AdminDashboard: Fetch options:`, fetchOptions);
       
-      const response = await fetch(finalUrl, fetchOptions);
+      let response;
+      try {
+        response = await fetch(finalUrl, fetchOptions);
+      } catch (fetchError) {
+        // Network error - server not reachable
+        console.error(`AdminDashboard: Network error for ${endpoint}:`, fetchError);
+        // Check if it's a CORS or network error
+        if (fetchError.message && fetchError.message.includes('Failed to fetch')) {
+          throw new Error('Cannot connect to server. Please check if the backend server (http://localhost:8083) is running.');
+        }
+        throw new Error(`Failed to connect to server: ${fetchError.message || 'Network error'}`);
+      }
       
-      console.log(`AdminDashboard: API response status:`, response.status);
+      // console.log(`AdminDashboard: API response status:`, response.status);
       
       if (response.ok) {
-        const data = await response.json();
-        console.log(`AdminDashboard: API call to ${endpoint} successful:`, data);
-        return data;
+        // Handle empty response for DELETE requests
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          try {
+            const data = await response.json();
+            // Only log on errors, not every successful call
+            // console.log(`AdminDashboard: API call to ${endpoint} successful:`, data);
+            return data;
+          } catch {
+            // If JSON parsing fails, return success for DELETE operations
+            if (options.method === 'DELETE') {
+              return { success: true, message: 'Operation completed successfully' };
+            }
+            throw new Error('Invalid JSON response from server');
+          }
+        } else {
+          // For DELETE requests that return 200 OK but no body
+          if (options.method === 'DELETE') {
+            return { success: true, message: 'Operation completed successfully' };
+          }
+          return { success: true };
+        }
       } else {
-        const errorText = await response.text();
-        const message = `HTTP ${response.status} on ${endpoint}${errorText ? `: ${errorText}` : ''}`;
+        let errorText = '';
+        try {
+          errorText = await response.text();
+        } catch {
+          errorText = `HTTP ${response.status}`;
+        }
+
+        let parsedError = '';
+        if (errorText) {
+          try {
+            const errorBody = JSON.parse(errorText);
+            parsedError = errorBody.message || errorBody.error || '';
+          } catch {
+            parsedError = errorText;
+          }
+        }
+        
+        // Provide better error messages for specific HTTP status codes
+        let message = '';
+        if (response.status === 403) {
+          message = `Access Denied (403): You don't have permission to perform this action. Please ensure you are logged in as an ADMIN user.`;
+        } else if (response.status === 401) {
+          message = `Unauthorized (401): Your session has expired. Please log in again.`;
+        } else if (parsedError) {
+          message = parsedError;
+        } else {
+          message = `HTTP ${response.status} on ${endpoint}${errorText ? `: ${errorText}` : ''}`;
+        }
+        
         console.error(`AdminDashboard: ${message}`);
         throw new Error(message);
       }
     } catch (error) {
       console.error(`AdminDashboard: API Error for ${endpoint}:`, error.message);
+      // Re-throw with more context if it's not already our formatted error
+      if (error.message && !error.message.includes('HTTP') && !error.message.includes('Failed to connect')) {
+        throw new Error(`API call failed: ${error.message}`);
+      }
       throw error;
     }
   };
@@ -152,7 +209,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
       
       // If API call was successful, use that data exclusively
       if (apiElections) {
-        console.log('AdminDashboard: Successfully loaded elections from API:', apiElections);
+        // console.log('AdminDashboard: Successfully loaded elections from API:', apiElections);
         
         // Process the elections data
         const processedElections = apiElections.map(election => ({
@@ -172,7 +229,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
       } 
       
       // If API call failed, fall back to localStorage
-      console.log('AdminDashboard: API call failed, falling back to localStorage');
+      // console.log('AdminDashboard: API call failed, falling back to localStorage');
       let localElections = [];
       try {
         localElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
@@ -188,7 +245,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
         votes: election.votes || {}
       }));
       
-      console.log('AdminDashboard: Loading elections from localStorage:', processedLocalElections);
+      // console.log('AdminDashboard: Loading elections from localStorage:', processedLocalElections);
       setData(prev => ({ ...prev, elections: processedLocalElections }));
       
       return processedLocalElections;
@@ -203,140 +260,71 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
       switch (activeTab) {
         case 'overview':
           // Try to load overview, fall back to mock data
-          const overview = await apiCall('/dashboard/overview') || {
-            totalElections: 5,
-            totalVoters: 1247,
-            totalCandidates: 15,
-            activeElections: 2,
-            recentActivity: [
-              { id: 1, action: "New voter registered", user: "John Doe", timestamp: new Date().toISOString() },
-              { id: 2, action: "Election created", user: "Admin", timestamp: new Date(Date.now() - 300000).toISOString() }
-            ]
-          };
-          setData(prev => ({ ...prev, overview }));
-          break;
-        case 'voters':
-          console.log('AdminDashboard: Loading voters data...');
           try {
-            const voters = await apiCall('/voters');
-            console.log('AdminDashboard: Successfully loaded voters:', voters?.length || 0, 'items');
-            console.log('AdminDashboard: Voter data:', voters);
-            if (voters && Array.isArray(voters)) {
-              setData(prev => ({ ...prev, voters }));
-              // Cache voters data in localStorage for persistence
-              localStorage.setItem('voterow_voters', JSON.stringify(voters));
-            } else {
-              console.error('AdminDashboard: Invalid voters data received:', voters);
-              // Try to load from localStorage as fallback
-              const cachedVoters = localStorage.getItem('voterow_voters');
-              if (cachedVoters) {
-                const parsedVoters = JSON.parse(cachedVoters);
-                setData(prev => ({ ...prev, voters: parsedVoters }));
-                console.log('AdminDashboard: Loaded voters from cache:', parsedVoters.length);
-              } else {
-                setData(prev => ({ ...prev, voters: [] }));
-              }
-            }
-          } catch (error) {
-            console.error('AdminDashboard: Failed to load voters:', error);
-            // Try to load from localStorage as fallback
-            const cachedVoters = localStorage.getItem('voterow_voters');
-            if (cachedVoters) {
-              try {
-                const parsedVoters = JSON.parse(cachedVoters);
-                setData(prev => ({ ...prev, voters: parsedVoters }));
-                console.log('AdminDashboard: Loaded voters from cache after API failure:', parsedVoters.length);
-              } catch (parseError) {
-                console.error('AdminDashboard: Failed to parse cached voters:', parseError);
-                setData(prev => ({ ...prev, voters: [] }));
-              }
-            } else {
-              setData(prev => ({ ...prev, voters: [] }));
-            }
-          }
-          break;
-        case 'candidates':
-          console.log('AdminDashboard: Loading candidates data from database...');
-          try {
-            const candidates = await apiCall('/candidates');
-            console.log('AdminDashboard: Successfully loaded candidates from database:', candidates?.length || 0, 'items');
-            
-            if (candidates && Array.isArray(candidates)) {
-              setData(prev => ({ ...prev, candidates }));
-            } else {
-              setData(prev => ({ ...prev, candidates: [] }));
-            }
-          } catch (error) {
-            console.error('AdminDashboard: Database candidates loading failed:', error);
-            setData(prev => ({ ...prev, candidates: [] }));
-          }
-          break;
-        case 'elections':
-          // Load elections directly without dependency loop
-          try {
-            const apiElections = await apiCall('/elections');
-            if (apiElections) {
-              const processedElections = apiElections.map(election => ({
-                ...election,
-                candidateCount: election.participants ? election.participants.length : 0,
-                votes: election.votes || {}
-              }));
-              setData(prev => ({ ...prev, elections: processedElections }));
-              localStorage.setItem('voterow_elections', JSON.stringify(processedElections));
-            } else {
-              const localElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
-              const processedLocalElections = localElections.map(election => ({
-                ...election,
-                candidateCount: election.participants ? election.participants.length : 0,
-                votes: election.votes || {}
-              }));
-              setData(prev => ({ ...prev, elections: processedLocalElections }));
-            }
-          } catch (error) {
-            console.error('Error loading elections:', error);
-            const localElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
-            setData(prev => ({ ...prev, elections: localElections }));
+            const overview = await apiCall('/dashboard/overview');
+            setData(prev => ({ ...prev, overview }));
+          } catch {
+            // Fallback data
+            const fallbackOverview = {
+              totalElections: 5,
+              totalVoters: 1247,
+              totalCandidates: 15,
+              activeElections: 2,
+              recentActivity: [
+                { id: 1, action: "New voter registered", user: "John Doe", timestamp: new Date().toISOString() },
+                { id: 2, action: "Election created", user: "Admin", timestamp: new Date(Date.now() - 300000).toISOString() }
+              ]
+            };
+            setData(prev => ({ ...prev, overview: fallbackOverview }));
           }
           break;
         case 'security':
-          const auditLogs = await apiCall('/security-audit') || [
-            { id: 1, event: "Successful login", user: "admin", timestamp: "2024-03-02 09:15", ip: "192.168.1.100" },
-            { id: 2, event: "Failed login attempt", user: "unknown", timestamp: "2024-03-02 08:45", ip: "10.0.0.50" }
-          ];
-          setData(prev => ({ ...prev, auditLogs }));
+          try {
+            const auditLogs = await apiCall('/security-audit');
+            setData(prev => ({ ...prev, auditLogs }));
+          } catch {
+            const fallbackLogs = [
+              { id: 1, event: "Successful login", user: "admin", timestamp: "2024-03-02 09:15", ip: "192.168.1.100" },
+              { id: 2, event: "Failed login attempt", user: "unknown", timestamp: "2024-03-02 08:45", ip: "10.0.0.50" }
+            ];
+            setData(prev => ({ ...prev, auditLogs: fallbackLogs }));
+          }
           break;
         case 'settings':
-          const settings = await apiCall('/settings/system-config') || {};
-          setData(prev => ({ ...prev, settings }));
+          try {
+            const settings = await apiCall('/settings/system-config');
+            setData(prev => ({ ...prev, settings }));
+          } catch {
+            setData(prev => ({ ...prev, settings: {} }));
+          }
+          break;
+        default:
+          // For other tabs, data is loaded in their specific useEffect
           break;
       }
-    } catch (error) {
+    } catch {
       console.log('Using fallback data due to API unavailability');
-      // Provide fallback data when backend is not available
-      setData(prev => ({ 
-        ...prev, 
-        overview: {
-          totalElections: 5,
-          totalVoters: 1247,
-          totalCandidates: 15,
-          activeElections: 2
-        }
-      }));
     }
   }, [activeTab]);
 
-  // Load data based on active tab
-  useEffect(() => {
-    // Only load data for tabs that need it, provide fallbacks for missing APIs
-    loadTabData();
-    
-    // We've removed the automatic polling to prevent constant refreshes
-    // Data will be refreshed only when the tab changes or when manually triggered
-  }, [loadTabData]);
+  // Load data only when explicitly requested
+  const loadDataForTab = useCallback(async (tabName) => {
+    if (tabName === 'candidates') {
+      try {
+        const candidates = await apiCall('/candidates');
+        if (candidates && Array.isArray(candidates)) {
+          setData(prev => ({ ...prev, candidates }));
+        }
+      } catch {
+        console.log('API failed, using empty array');
+        setData(prev => ({ ...prev, candidates: [] }));
+      }
+    }
+  }, []);
 
   // Initialize component and load data for the current tab on mount
   useEffect(() => {
-    console.log('AdminDashboard: Component mounted, initial tab:', activeTab);
+    // console.log('AdminDashboard: Component mounted, initial tab:', activeTab);
     
     // Load cached data immediately for better UX
     const cachedVoters = localStorage.getItem('voterow_voters');
@@ -350,7 +338,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
           parsedVoters = [];
         }
         setData(prev => ({ ...prev, voters: parsedVoters }));
-        console.log('AdminDashboard: Restored voters from cache on mount:', parsedVoters.length);
+        // console.log('AdminDashboard: Restored voters from cache on mount:', parsedVoters.length);
       } catch (error) {
         console.error('AdminDashboard: Failed to parse cached voters on mount:', error);
       }
@@ -368,7 +356,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
           parsedCandidates = [];
         }
         setData(prev => ({ ...prev, candidates: parsedCandidates }));
-        console.log('AdminDashboard: Restored candidates from cache on mount:', parsedCandidates.length);
+        // console.log('AdminDashboard: Restored candidates from cache on mount:', parsedCandidates.length);
       } catch (error) {
         console.error('AdminDashboard: Failed to parse cached candidates on mount:', error);
       }
@@ -380,37 +368,44 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
       try {
         const parsedElections = JSON.parse(cachedElections);
         setData(prev => ({ ...prev, elections: parsedElections }));
-        console.log('AdminDashboard: Restored elections from cache on mount:', parsedElections.length);
+        // console.log('AdminDashboard: Restored elections from cache on mount:', parsedElections.length);
       } catch (error) {
         console.error('AdminDashboard: Failed to parse cached elections on mount:', error);
       }
     }
 
-    // Note: Candidates will be loaded from database via loadTabData() - no localStorage preload needed
-    
-    // Force load data for the current tab when component mounts
-    if (activeTab) {
-      console.log('AdminDashboard: Loading initial data for tab:', activeTab);
-      loadTabData();
-    }
+    // Note: Data will be loaded manually via refresh buttons
   }, []); // Empty dependency array means this runs once on mount
 
-  // Auto-load data for specific tabs (for direct navigation or page refresh)
+  // Load elections when the elections tab is opened
   useEffect(() => {
-    if (activeTab === 'voters') {
-      console.log('AdminDashboard: Voters tab detected, ensuring data is loaded');
-      loadTabData();
-    } else if (activeTab === 'candidates') {
-      console.log('AdminDashboard: Candidates tab detected, ensuring data is loaded');
-      loadTabData();
-    } else if (activeTab === 'elections') {
-      console.log('AdminDashboard: Elections tab detected, ensuring data is loaded');
-      loadElections();
+    if (activeTab === 'elections') {
+      loadElections().catch(error => {
+        console.error('AdminDashboard: Failed to load elections:', error);
+      });
     }
-  }, [activeTab, loadTabData, loadElections]);
+    if (activeTab === 'voters') {
+      apiCall('/voters')
+        .then(voters => {
+          if (voters && Array.isArray(voters)) {
+            setData(prev => ({ ...prev, voters }));
+            localStorage.setItem('voterow_voters', JSON.stringify(voters));
+          }
+        })
+        .catch(err => console.error('AdminDashboard: Failed to load voters:', err));
+    }
+  }, [activeTab, loadElections]);
+
+  useEffect(() => {
+    if (activeTab === 'candidates' && data.candidates.length === 0) {
+      loadDataForTab('candidates').catch(error => {
+        console.error('AdminDashboard: Failed to load candidates:', error);
+      });
+    }
+  }, [activeTab, data.candidates.length, loadDataForTab]);
 
   // Election form handlers - memoized to prevent re-renders
-  const handleFormChange = useCallback((field, value) => {
+  const _handleFormChange = useCallback((field, value) => {
     setElectionForm(prev => ({
       ...prev,
       [field]: value
@@ -419,20 +414,26 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
   
   // Memoized loadData function to prevent re-renders
   const loadData = useCallback((type) => {
-    console.log('AdminDashboard: loadData called for type:', type);
+    // console.log('AdminDashboard: loadData called for type:', type);
     switch(type) {
       case 'elections':
-        console.log('AdminDashboard: Force loading elections data');
+        // console.log('AdminDashboard: Force loading elections data');
         setLoading(true);
         loadElections().finally(() => setLoading(false));
         break;
       case 'voters':
-        console.log('AdminDashboard: Force loading voters data');
         setLoading(true);
-        loadTabData().finally(() => setLoading(false));
+        apiCall('/voters')
+          .then(voters => {
+            if (voters && Array.isArray(voters)) {
+              setData(prev => ({ ...prev, voters }));
+              localStorage.setItem('voterow_voters', JSON.stringify(voters));
+            }
+          })
+          .catch(err => console.error('Failed to load voters:', err))
+          .finally(() => setLoading(false));
         break;
       case 'candidates':
-        console.log('AdminDashboard: Force loading candidates data');
         setLoading(true);
         loadTabData().finally(() => setLoading(false));
         break;
@@ -443,7 +444,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
 
   // Election management functions - memoized to prevent re-renders
   const handleCreateElection = useCallback(() => {
-    console.log('AdminDashboard: Create Election button clicked');
+    // console.log('AdminDashboard: Create Election button clicked');
     setEditingElection(null);
     setElectionForm({
       title: '',
@@ -453,7 +454,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
       status: 'DRAFT'
     });
     setShowElectionModal(true);
-    console.log('AdminDashboard: Election modal set to visible');
+    // console.log('AdminDashboard: Election modal set to visible');
   }, []);
 
   const handleEditElection = useCallback((election) => {
@@ -469,7 +470,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
   }, []);
 
   const handleSaveElection = useCallback(async () => {
-    console.log('AdminDashboard: handleSaveElection called with form:', electionForm);
+    // console.log('AdminDashboard: handleSaveElection called with form:', electionForm);
     
     try {
       // Validate form
@@ -486,18 +487,29 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
         return;
       }
       
-      console.log('AdminDashboard: Form validation passed, proceeding with save');
+      // console.log('AdminDashboard: Form validation passed, proceeding with save');
       let apiSuccess = false;
       
       if (editingElection) {
         // Always try to update via API first
         try {
+          // Format dates properly for backend (ISO format)
+          const formattedElectionData = {
+            title: electionForm.title,
+            description: electionForm.description,
+            startDate: electionForm.startDate ? new Date(electionForm.startDate).toISOString() : null,
+            endDate: electionForm.endDate ? new Date(electionForm.endDate).toISOString() : null,
+            status: electionForm.status || 'DRAFT'
+          };
+          
+          console.log('AdminDashboard: Updating election via API with data:', formattedElectionData);
+          
           const apiResponse = await apiCall(`/elections/${editingElection.id}`, {
             method: 'PUT',
-            body: JSON.stringify(electionForm)
+            body: JSON.stringify(formattedElectionData)
           });
           
-          if (apiResponse) {
+          if (apiResponse && apiResponse.id) {
             console.log('AdminDashboard: Successfully updated election via API');
             apiSuccess = true;
             // Update local state with API response
@@ -507,9 +519,14 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
                 e.id === editingElection.id ? apiResponse : e
               )
             }));
+            // Refresh elections from database
+            await loadElections();
+          } else {
+            throw new Error('Invalid response from server');
           }
         } catch (apiError) {
-          console.log('AdminDashboard: API update failed:', apiError);
+          console.error('AdminDashboard: API update failed:', apiError);
+          alert('Failed to update election in database. Changes saved locally only.');
         }
         
         // Only update localStorage if API call failed
@@ -553,22 +570,37 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
       } else {
         // Always try to create via API first
         try {
+          // Format dates properly for backend (ISO format)
+          const formattedElectionData = {
+            title: electionForm.title,
+            description: electionForm.description,
+            startDate: electionForm.startDate ? new Date(electionForm.startDate).toISOString() : null,
+            endDate: electionForm.endDate ? new Date(electionForm.endDate).toISOString() : null,
+            status: electionForm.status || 'DRAFT'
+          };
+          
+          console.log('AdminDashboard: Creating election via API with data:', formattedElectionData);
+          
           const apiResponse = await apiCall('/elections', {
             method: 'POST',
-            body: JSON.stringify(electionForm)
+            body: JSON.stringify(formattedElectionData)
           });
           
-          if (apiResponse) {
-            console.log('AdminDashboard: Successfully created election via API');
+          if (apiResponse && apiResponse.id) {
+            console.log('AdminDashboard: Successfully created election via API with ID:', apiResponse.id);
             apiSuccess = true;
             // Update local state with API response
             setData(prev => ({
               ...prev,
               elections: [...prev.elections, apiResponse]
             }));
+            // Refresh elections from database
+            await loadElections();
+          } else {
+            throw new Error('Invalid response from server');
           }
         } catch (apiError) {
-          console.log('AdminDashboard: API creation failed:', apiError);
+          console.error('AdminDashboard: API creation failed:', apiError);
           // Show user that we're falling back to localStorage
           alert('Backend server is not accessible. Election will be saved locally only.');
         }
@@ -606,12 +638,12 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
         }
       }
       
-      console.log('AdminDashboard: Election save completed, closing modal');
+      // console.log('AdminDashboard: Election save completed, closing modal');
       setShowElectionModal(false);
       alert(editingElection ? 'Election updated successfully!' : 'Election created successfully!');
       
       // Reload elections data and ensure localStorage is updated
-      console.log('AdminDashboard: Reloading elections data');
+      // console.log('AdminDashboard: Reloading elections data');
       await loadElections();
       console.log('AdminDashboard: Elections reloaded successfully');
     } catch (error) {
@@ -627,7 +659,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
         await apiCall(`/elections/${election.id}/start`, {
           method: 'POST'
         });
-      } catch (apiError) {
+      } catch {
         console.log('API start failed, using localStorage');
       }
       
@@ -659,7 +691,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
         await apiCall(`/elections/${election.id}/end`, {
           method: 'POST'
         });
-      } catch (apiError) {
+      } catch {
         console.log('API end failed, using localStorage');
       }
       
@@ -685,7 +717,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
   }, []);
   
   // View and manage enrollment requests
-  const viewEnrollmentRequests = (electionId) => {
+  const _viewEnrollmentRequests = (electionId) => {
     const election = data.elections.find(e => e.id === electionId);
     if (election) {
       setCurrentElectionId(electionId);
@@ -793,7 +825,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
   );
 
   // Module 2: Voter Management Component
-  const VoterManagementModule = ({ voters = [], setData, data, loadData }) => {
+  const VoterManagementModule = ({ voters = [], setData, loadData }) => {
     // State for voter management
     const [showAddVoterModal, setShowAddVoterModal] = useState(false);
     const [showImportModal, setShowImportModal] = useState(false);
@@ -813,7 +845,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
       console.log("Opening Add Voter modal");
       setSelectedVoter(null);
       setIsEditingVoter(false);
-      setShowVoterModal(true);
+      setShowAddVoterModal(true);  // Fixed: was using setShowVoterModal
     }, []);
     
     const handleImportCSV = useCallback(() => {
@@ -847,11 +879,30 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
     const handleExportList = useCallback(async () => {
       console.log("Exporting voter list");
       try {
-          const response = await fetch(`${BASE_API_URL}/api/admin/voters/export`, {
+        // First refresh the voters data to ensure we have the latest
+        const token = secureStorage.getToken();
+        const votersResponse = await fetch(`${BASE_API_URL}/api/admin/voters`, {
           credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
           }
+        });
+        
+        if (votersResponse.ok) {
+          const latestVoters = await votersResponse.json();
+          // Update the UI with latest data
+          setData(prevData => ({
+            ...prevData,
+            voters: latestVoters
+          }));
+          localStorage.setItem('voterow_voters', JSON.stringify(latestVoters));
+        }
+        
+        // Now export the voters
+        const response = await fetch(`${BASE_API_URL}/api/admin/voters/export`, {
+          credentials: 'include',
+          headers: getAuthHeaders()
         });
         
         if (response.ok) {
@@ -872,26 +923,24 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
         console.error("Error exporting voters:", error);
         alert("Failed to export voters list. Please try again.");
       }
-    }, []);
+    }, [setData]);
 
     // Voter action handlers
     const handleEditVoter = useCallback((voter) => {
       console.log("Editing voter:", voter);
       // Set selected voter for editing
       setSelectedVoter(voter);
-      setShowVoterModal(true);
+      setShowAddVoterModal(true);  // Fixed: was using setShowVoterModal
       setIsEditingVoter(true);
     }, []);
 
-    const handleToggleVoterStatus = useCallback(async (voter) => {
+    const _handleToggleVoterStatus = useCallback(async (voter) => {
       console.log("Toggling voter status:", voter);
       try {
         const response = await fetch(`${BASE_API_URL}/api/admin/voters/${voter.id}/toggle-status`, {
           method: 'PUT',
           credentials: 'include',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: getAuthHeaders(),
           body: JSON.stringify({ isActive: !voter.isActive })
         });
 
@@ -922,9 +971,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
         const response = await fetch(`${BASE_API_URL}/api/admin/voters/${voter.id}/toggle-verification`, {
           method: 'PUT',
           credentials: 'include',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: getAuthHeaders(),
           body: JSON.stringify({ isVerified: !voter.isVerified })
         });
 
@@ -950,41 +997,70 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
     }, [voters, setData]);
 
     const handleDeleteVoter = useCallback(async (voter) => {
-      console.log("Deleting voter:", voter);
-      if (window.confirm(`Are you sure you want to delete voter "${voter.fullName || voter.name}"?`)) {
+      if (!voter.id) {
+        alert("Error: Voter ID is missing");
+        return;
+      }
+      
+      if (window.confirm(`Are you sure you want to delete voter "${voter.fullName || voter.name}"? This action cannot be undone.`)) {
         try {
-          const response = await fetch(`${BASE_API_URL}/api/admin/voters/${voter.id}`, {
-            method: 'DELETE',
-            credentials: 'include',
-            headers: {
-              'Content-Type': 'application/json',
-            }
-          });
-
-          if (response.ok) {
-            // Remove voter from local list
+          console.log('AdminDashboard: Deleting voter with ID:', voter.id);
+          
+          // Check if backend is accessible
+          const token = secureStorage.getToken();
+          if (!token) {
+            throw new Error('Not authenticated. Please log in again.');
+          }
+          
+          // Use DELETE endpoint for hard delete
+          console.log('AdminDashboard: Calling DELETE endpoint for voter:', voter.id);
+          const response = await apiCall(`/voters/${voter.id}`, { method: 'DELETE' });
+          console.log('AdminDashboard: Delete response:', response);
+          
+          // DELETE endpoint returns {success: true, message: "..."} 
+          // Check for success in various formats
+          if (response && (response.success === true || (response.success !== false && response.message) || response.id)) {
+            console.log('AdminDashboard: Voter deleted successfully:', response);
+            
+            // Remove from local state
             const updatedVoters = voters.filter(v => v.id !== voter.id);
             setData(prevData => ({
               ...prevData,
               voters: updatedVoters
             }));
-            // Update localStorage cache
-            localStorage.setItem('votersData', JSON.stringify(updatedVoters));
-            alert("Voter deleted successfully");
+            localStorage.setItem('voterow_voters', JSON.stringify(updatedVoters));
+            
+            // Refresh from database
+            await loadData('voters');
+            
+            alert('Voter deleted successfully');
           } else {
-            const errorText = await response.text();
-            console.error("Delete voter error:", response.status, errorText);
-            alert(`Failed to delete voter: ${response.status} - ${errorText}`);
+            throw new Error(response?.message || response?.error || 'Delete failed');
           }
         } catch (error) {
-          console.error("Error deleting voter:", error);
-          alert("Failed to delete voter. Please try again.");
+          console.error('AdminDashboard: Error deleting voter:', error);
+          
+          // Provide more specific error messages
+          let errorMessage = 'Failed to delete voter';
+          if (error.message) {
+            if (error.message.includes('fetch')) {
+              errorMessage = 'Cannot connect to server. Please check if the backend is running.';
+            } else if (error.message.includes('401') || error.message.includes('Unauthorized')) {
+              errorMessage = 'Authentication failed. Please log in again.';
+            } else if (error.message.includes('404')) {
+              errorMessage = 'Voter not found. It may have already been deleted.';
+            } else {
+              errorMessage = `Failed to delete voter: ${error.message}`;
+            }
+          }
+          
+          alert(errorMessage);
         }
       }
-    }, [voters, setData]);
+    }, [voters, setData, loadData]);
     
-    // Add debugging and error handling
-    console.log("VoterManagementModule render - voters:", voters, "length:", voters?.length);
+    // Add debugging and error handling (reduced logging)
+    // console.log("VoterManagementModule render - voters:", voters, "length:", voters?.length);
     
     if (!voters) {
       return (
@@ -1006,7 +1082,37 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
           <button className="btn btn-secondary" onClick={handleImportCSV}><FaUpload /> Import CSV</button>
           <button className="btn btn-info" onClick={handleVerifyVoters}><FaUserCheck /> Verify Voters</button>
           <button className="btn btn-success" onClick={handleExportList}><FaDownload /> Export List</button>
-          <button className="btn btn-warning" onClick={() => loadData('voters')}><FaDownload /> Refresh Data</button>
+          <button className="btn btn-warning" onClick={async () => {
+            try {
+              // Clear cache first to ensure fresh data
+              localStorage.removeItem('voterow_voters');
+              localStorage.removeItem('votersData');
+              
+              const token = secureStorage.getToken();
+              const response = await fetch(`${BASE_API_URL}/api/admin/voters`, {
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Cache-Control': 'no-cache, no-store, must-revalidate',
+                  'Pragma': 'no-cache',
+                  ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+                }
+              });
+              if (response.ok) {
+                const freshVoters = await response.json();
+                setData(prevData => ({
+                  ...prevData,
+                  voters: freshVoters
+                }));
+                localStorage.setItem('voterow_voters', JSON.stringify(freshVoters));
+                alert(`Refreshed ${freshVoters.length} voters from database`);
+              } else {
+                alert('Failed to refresh voters data');
+              }
+            } catch (error) {
+              console.error('Error refreshing voters:', error);
+              alert('Error refreshing voters data');
+            }
+          }}><FaSyncAlt /> Refresh Data</button>
         </div>
         
         {/* Add Voter Modal */}
@@ -1235,41 +1341,69 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
           title={isEditingVoter ? "Edit Voter" : "Add Voter"}
           onSave={async (updatedUser, userId) => {
             try {
-              let response;
+              console.log('AdminDashboard: Saving voter:', userId ? 'Update' : 'Create', updatedUser);
+              
+              let result;
               if (userId) {
                 // Update existing voter
-                response = await fetch(`${BASE_API_URL}/api/admin/voters/${userId}`, {
+                result = await apiCall(`/voters/${userId}`, {
                   method: 'PUT',
-                  credentials: 'include',
-                  headers: {
-                    'Content-Type': 'application/json',
-                  },
                   body: JSON.stringify(updatedUser)
                 });
               } else {
-                // Create new voter
-                response = await fetch(`${BASE_API_URL}/api/admin/voters`, {
-                  method: 'POST',
-                  credentials: 'include',
-                  headers: {
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify(updatedUser)
-                });
+                // Create new voter - map form fields to API format
+                // Backend expects: fullName, email, age, phone (not phoneNumber)
+                // UserModal sends: fullName, email, password, age, userType
+                const voterData = {
+                  fullName: updatedUser.fullName || updatedUser.name || '',
+                  email: updatedUser.email || '',
+                  age: updatedUser.age ? (typeof updatedUser.age === 'string' ? parseInt(updatedUser.age) : updatedUser.age) : null,
+                  phone: updatedUser.phoneNumber || updatedUser.phone || ''
+                };
+                
+                // Validate required fields
+                if (!voterData.fullName || !voterData.email) {
+                  throw new Error('Full name and email are required');
+                }
+                
+                // Validate age
+                if (!voterData.age || voterData.age < 18) {
+                  throw new Error('Age must be at least 18');
+                }
+                
+                console.log('AdminDashboard: Creating voter with data:', voterData);
+                console.log('AdminDashboard: API URL will be:', `${BASE_API_URL}/api/admin/voters`);
+                
+                try {
+                  result = await apiCall('/voters', {
+                    method: 'POST',
+                    body: JSON.stringify(voterData)
+                  });
+                  console.log('AdminDashboard: Voter creation response:', result);
+                } catch (apiError) {
+                  console.error('AdminDashboard: API call failed:', apiError);
+                  // Re-throw with more context
+                  throw apiError;
+                }
               }
 
-              if (response.ok) {
-                const result = await response.json();
+              if (result && (result.id || result.success !== false)) {
+                console.log('AdminDashboard: Voter saved successfully:', result);
+                
                 if (userId) {
                   // Update voters list locally for edit
                   const updatedVoters = voters.map(v => 
-                    v.id === userId ? { ...v, ...updatedUser } : v
+                    v.id === userId ? { ...v, ...result } : v
                   );
                   setData(prevData => ({
                     ...prevData,
                     voters: updatedVoters
                   }));
-                  localStorage.setItem('votersData', JSON.stringify(updatedVoters));
+                  localStorage.setItem('voterow_voters', JSON.stringify(updatedVoters));
+                  
+                  // Refresh from database
+                  await loadData('voters');
+                  
                   alert("Voter updated successfully");
                 } else {
                   // Add new voter to list for create
@@ -1278,17 +1412,39 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
                     ...prevData,
                     voters: newVoters
                   }));
-                  localStorage.setItem('votersData', JSON.stringify(newVoters));
+                  localStorage.setItem('voterow_voters', JSON.stringify(newVoters));
+                  
+                  // Refresh from database
+                  await loadData('voters');
+                  
                   alert("Voter created successfully");
                 }
-                // Modal will close automatically via UserModal's onClose call
+                
+                // Close modal
+                setShowVoterModal(false);
+                setSelectedVoter(null);
+                setIsEditingVoter(false);
               } else {
-                const errorData = await response.json();
-                alert(`Failed to ${userId ? 'update' : 'create'} voter: ${errorData.message || 'Unknown error'}`);
+                throw new Error(result?.message || result?.error || 'Invalid response from server');
               }
             } catch (error) {
               console.error(`Error ${userId ? 'updating' : 'creating'} voter:`, error);
-              alert(`Failed to ${userId ? 'update' : 'create'} voter. Please try again.`);
+              
+              let errorMessage = `Failed to ${userId ? 'update' : 'create'} voter`;
+              if (error.message) {
+                if (error.message.includes('Email already exists') || error.message.includes('409')) {
+                  errorMessage = 'Email already exists. Please use a different email address.';
+                } else if (error.message.includes('fetch') || error.message.includes('connect to server') || error.message.includes('Network')) {
+                  errorMessage = 'Cannot connect to server. Please check if the backend server (http://localhost:8083) is running.';
+                } else if (error.message.includes('401') || error.message.includes('Unauthorized')) {
+                  errorMessage = 'Authentication failed. Please log out and log in again.';
+                } else {
+                  errorMessage = `Failed to ${userId ? 'update' : 'create'} voter: ${error.message}`;
+                }
+              }
+              
+              alert(errorMessage);
+              // Don't close modal on error so user can retry
             }
           }}
         />
@@ -1312,65 +1468,39 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
     });
     const [symbolFile, setSymbolFile] = useState(null);
     const [pendingCandidates, setPendingCandidates] = useState([]);
-    
-    // Load candidates from database on component mount
-    React.useEffect(() => {
-      const loadCandidatesFromDB = async () => {
-        try {
-          const candidates = await apiCall('/candidates');
-          if (candidates && Array.isArray(candidates)) {
-            setData(prev => ({ ...prev, candidates }));
-            const pending = candidates.filter(c => c.status?.toLowerCase() === 'pending');
-            setPendingCandidates(pending);
-          }
-        } catch (error) {
-          console.log('API not available, using existing candidate data');
-          // Silently use existing candidates data if API fails
-          const existingCandidates = data.candidates || [];
-          const pending = existingCandidates.filter(c => c.status?.toLowerCase() === 'pending');
-          setPendingCandidates(pending);
-        }
-      };
-      loadCandidatesFromDB();
-    }, []);
-    
-
+    const [showAssignModal, setShowAssignModal] = useState(false);
+    const [assigningCandidate, setAssigningCandidate] = useState(null);
+    const [assignElectionId, setAssignElectionId] = useState('');
     
     // Function to load data
     const loadData2 = async (type) => {
       try {
-        let candidates = [];
+        // console.log('AdminDashboard: Loading candidates from database...');
         
-        // Load from localStorage only to avoid API duplication issues
-        console.log('AdminDashboard: Loading candidates from localStorage only');
-        candidates = [];
+        // Try to load from API first
+        const apiCandidates = await apiCall('/candidates');
         
-        // Also load from localStorage and merge
-        const localCandidates = JSON.parse(localStorage.getItem('voterow_candidates')) || [];
-        
-        // Merge API and localStorage candidates, avoiding duplicates
-        const allCandidates = [...candidates];
-        localCandidates.forEach(localCandidate => {
-          const exists = allCandidates.find(c => 
-            c.id === localCandidate.id || 
-            (c.email === localCandidate.email && c.electionId === localCandidate.electionId)
+        if (apiCandidates && Array.isArray(apiCandidates)) {
+          // console.log('AdminDashboard: Successfully loaded from database:', apiCandidates.length);
+          setData(prev => ({ ...prev, candidates: apiCandidates }));
+          
+          const pending = apiCandidates.filter(c => 
+            c.status === 'PENDING' || (!c.isVerified && c.status !== 'APPROVED')
           );
-          if (!exists) {
-            allCandidates.push(localCandidate);
-          }
-        });
+          setPendingCandidates(pending);
+          return;
+        }
         
-        console.log('AdminDashboard: Total candidates loaded:', allCandidates.length);
-        setData(prev => ({ ...prev, candidates: allCandidates }));
-        
-        // Filter pending candidates for approval
-        const pending = allCandidates.filter(c => c.status?.toLowerCase() === 'pending');
-        console.log('AdminDashboard: Pending candidates for approval:', pending.length);
+        // Fallback to localStorage if API fails
+        console.log('AdminDashboard: API failed, using localStorage fallback');
+        const localCandidates = JSON.parse(localStorage.getItem('voterow_candidates')) || [];
+        setData(prev => ({ ...prev, candidates: localCandidates }));
+        const pending = localCandidates.filter(c => c.status?.toLowerCase() === 'pending');
         setPendingCandidates(pending);
         
       } catch (error) {
         console.error(`Error loading ${type} data:`, error);
-        // Fallback to localStorage only
+        // Final fallback to localStorage
         const localCandidates = JSON.parse(localStorage.getItem('voterow_candidates')) || [];
         setData(prev => ({ ...prev, candidates: localCandidates }));
         const pending = localCandidates.filter(c => c.status?.toLowerCase() === 'pending');
@@ -1392,12 +1522,49 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
     const handleApproveCandidate = async () => {
       console.log('AdminDashboard: Loading candidates for approval...');
       
-      // Use existing candidates data from state
-      const currentCandidates = data.candidates || [];
-      const pending = currentCandidates.filter(c => c.status?.toLowerCase() === 'pending');
-      
-      console.log('AdminDashboard: Found pending candidates:', pending.length);
-      setPendingCandidates(pending);
+      // First try to load fresh data from API
+      try {
+        const candidates = await apiCall('/candidates');
+        if (candidates && Array.isArray(candidates)) {
+          console.log('AdminDashboard: Fresh candidates loaded from API:', candidates.length);
+          setData(prev => ({ ...prev, candidates }));
+          
+          // Filter for pending candidates (both PENDING and unverified)
+          const pending = candidates.filter(c => {
+            const status = c.status?.toLowerCase();
+            const isVerified = c.isVerified;
+            return status === 'pending' || (!isVerified && status !== 'approved' && status !== 'rejected');
+          });
+          
+          console.log('AdminDashboard: Found pending candidates:', pending.length);
+          console.log('AdminDashboard: Pending candidates details:', pending);
+          setPendingCandidates(pending);
+        } else {
+          // Fallback to existing data
+          const currentCandidates = data.candidates || [];
+          const pending = currentCandidates.filter(c => {
+            const status = c.status?.toLowerCase();
+            const isVerified = c.isVerified;
+            return status === 'pending' || (!isVerified && status !== 'approved' && status !== 'rejected');
+          });
+          
+          console.log('AdminDashboard: Using existing candidates, found pending:', pending.length);
+          setPendingCandidates(pending);
+        }
+      } catch (error) {
+        console.error('AdminDashboard: Error loading candidates for approval:', error);
+        
+        // Fallback to existing data
+        const currentCandidates = data.candidates || [];
+        const pending = currentCandidates.filter(c => {
+          const status = c.status?.toLowerCase();
+          const isVerified = c.isVerified;
+          return status === 'pending' || (!isVerified && status !== 'approved' && status !== 'rejected');
+        });
+        
+        console.log('AdminDashboard: Error fallback, found pending candidates:', pending.length);
+        setPendingCandidates(pending);
+      }
       
       setShowApproveModal(true);
     };
@@ -1418,33 +1585,32 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
     const handleCandidateStatus = async (candidate, status) => {
       try {
         console.log('AdminDashboard: Updating candidate status:', candidate.name, 'to', status);
-        
-        // Try API call first
-        try {
-          await apiCall(`/candidates/${candidate.id}/status`, {
-            method: 'POST',
-            body: JSON.stringify({ 
-              status: status.toUpperCase() 
-            })
+
+        const updatedCandidate = await apiCall(`/candidates/${candidate.id}/status`, {
+          method: 'POST',
+          body: JSON.stringify({
+            status: status.toUpperCase()
+          })
+        });
+        console.log('AdminDashboard: Successfully updated candidate status in database', updatedCandidate);
+
+        const refreshedCandidates = await apiCall('/candidates');
+        if (Array.isArray(refreshedCandidates)) {
+          setData(prev => ({
+            ...prev,
+            candidates: refreshedCandidates
+          }));
+
+          const pending = refreshedCandidates.filter(c => {
+            const candidateStatus = c.status?.toLowerCase();
+            const isVerified = c.isVerified;
+            return candidateStatus === 'pending' || (!isVerified && candidateStatus !== 'approved' && candidateStatus !== 'rejected');
           });
-          console.log('AdminDashboard: Successfully updated candidate status in database');
-        } catch (apiError) {
-          console.log('AdminDashboard: API call failed, updating locally only:', apiError);
+          setPendingCandidates(pending);
         }
         
-        // Update local UI state immediately regardless of API success
-        setData(prev => ({
-          ...prev,
-          candidates: prev.candidates.map(c => 
-            c.id === candidate.id ? { ...c, status: status.toUpperCase() } : c
-          )
-        }));
-        
-        // Update pending candidates list
-        setPendingCandidates(prev => prev.filter(c => c.id !== candidate.id));
-        
         console.log(`AdminDashboard: Candidate ${candidate.name} ${status.toLowerCase()} successfully`);
-        alert(`Candidate ${status.toLowerCase() === 'approved' ? 'approved' : 'rejected'} successfully`);
+        alert(`Candidate ${status.toLowerCase() === 'approved' ? 'approved and assigned to election' : 'rejected'} successfully`);
         
       } catch (error) {
         console.error(`Error updating candidate status:`, error);
@@ -1467,10 +1633,14 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
         formData.append('file', symbolFile);
         
         // Use direct fetch instead of apiCall to avoid content-type issues
+        const token = secureStorage.getToken();
         const response = await fetch(`${BASE_API_URL}/api/admin/candidates/${candidate.id}/symbol`, {
           method: 'POST',
           body: formData,
-          // Don't set Content-Type - let browser handle it for FormData
+          headers: {
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+            // Don't set Content-Type - let browser handle it for FormData
+          },
           credentials: 'include'
         });
         
@@ -1502,8 +1672,8 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
       e.preventDefault();
       
       // Basic form validation
-      if (!candidateForm.name || !candidateForm.email || !candidateForm.party) {
-        alert('Please fill in all required fields (Name, Email, Party)');
+      if (!candidateForm.name || !candidateForm.email) {
+        alert('Please fill in required fields (Name, Email)');
         return;
       }
       
@@ -1515,6 +1685,8 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
       }
       
       try {
+        console.log('AdminDashboard: Submitting candidate form:', selectedCandidate ? 'Update' : 'Create', candidateForm);
+        
         if (selectedCandidate) {
           // Edit existing candidate
           const result = await apiCall(`/candidates/${selectedCandidate.id}`, {
@@ -1522,14 +1694,25 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
             body: JSON.stringify(candidateForm)
           });
           
-          if (result) {
+          if (result && result.id) {
+            console.log('AdminDashboard: Candidate updated successfully:', result);
+            
+            setData(prev => ({
+              ...prev,
+              candidates: prev.candidates.map(c => 
+                c.id === selectedCandidate.id ? { ...c, ...result } : c
+              )
+            }));
+            
+            // Refresh from database
+            await loadData2('candidates');
+            
             alert('Candidate updated successfully');
             setShowAddCandidateModal(false);
             setSelectedCandidate(null);
             setCandidateForm({ name: '', party: '', email: '', phone: '' });
-            loadData2('candidates');
           } else {
-            alert('Failed to update candidate. Please try again.');
+            throw new Error('Invalid response from server');
           }
         } else {
           // Add new candidate
@@ -1538,28 +1721,38 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
             body: JSON.stringify(candidateForm)
           });
           
-          if (result) {
-            alert('Candidate added successfully');
+          if (result && result.id) {
+            console.log('AdminDashboard: Candidate created successfully in database:', result);
+            
+            // Refresh from database immediately
+            await loadData2('candidates');
+            
+            alert(`Candidate "${result.name}" created successfully!`);
+            
             setShowAddCandidateModal(false);
             setCandidateForm({ name: '', party: '', email: '', phone: '' });
-            loadData2('candidates');
           } else {
-            alert('Failed to add candidate. Please try again.');
+            throw new Error('Invalid response from server');
           }
         }
       } catch (error) {
         console.error('Error submitting candidate form:', error);
         
         // Handle specific error types
-        if (error.message.includes('409')) {
-          alert('Email already exists! Please use a different email address.');
-        } else if (error.message.includes('500')) {
-          alert('Server error occurred. Please check if the backend is running and try again.');
-        } else if (error.message.includes('Failed to fetch')) {
-          alert('Cannot connect to server. Please check if the backend is running on port 8081.');
-        } else {
-          alert(`Failed to ${selectedCandidate ? 'update' : 'add'} candidate: ${error.message}`);
+        let errorMessage = `Failed to ${selectedCandidate ? 'update' : 'add'} candidate`;
+        if (error.message) {
+          if (error.message.includes('409') || error.message.includes('Email already exists')) {
+            errorMessage = 'Email already exists! Please use a different email address.';
+          } else if (error.message.includes('500')) {
+            errorMessage = 'Server error occurred. Please check if the backend is running and try again.';
+          } else if (error.message.includes('Failed to fetch') || error.message.includes('Failed to connect')) {
+            errorMessage = `Cannot connect to server. Please check if the backend server (${BASE_API_URL}) is running.`;
+          } else {
+            errorMessage = `${errorMessage}: ${error.message}`;
+          }
         }
+        
+        alert(errorMessage);
       }
     };
     
@@ -1569,22 +1762,95 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
         <div className="module-content">
           <div className="action-buttons">
             <button className="btn btn-primary" onClick={handleAddCandidate}><FaPlus /> Add Candidate</button>
+            <button className="btn btn-success" onClick={async () => {
+              try {
+                const token = secureStorage.getToken();
+                const response = await fetch(`${BASE_API_URL}/api/admin/status`, {
+                  headers: {
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+                  }
+                });
+                if (response.ok) {
+                  const status = await response.json();
+                  alert(`✅ System Health: ${status.status}\nDatabase: ${status.database}\nUsers: ${status.userCount}\nElections: ${status.electionCount}\nCandidates: ${status.candidateCount}`);
+                } else {
+                  alert('⚠️ Backend responding but may have issues');
+                }
+              } catch {
+                alert(`❌ Backend server not running at ${BASE_API_URL}`);
+              }
+            }}>System Health</button>
             <button className="btn btn-secondary" onClick={handleUploadSymbol}><FaUpload /> Upload Symbols</button>
             <button className="btn btn-info" onClick={handleApproveCandidate}><FaUserCheck /> Approve Candidates</button>
             <button className="btn btn-secondary" onClick={async () => {
-              console.log('AdminDashboard: Manual refresh clicked');
               try {
+                console.log('Refreshing candidates from database...');
                 const candidates = await apiCall('/candidates');
+                console.log('API response:', candidates);
+                
                 if (candidates && Array.isArray(candidates)) {
                   setData(prev => ({ ...prev, candidates }));
-                  const pending = candidates.filter(c => c.status?.toLowerCase() === 'pending');
+                  const pending = candidates.filter(c => 
+                    c.status === 'PENDING' || (!c.isVerified && c.status !== 'APPROVED')
+                  );
                   setPendingCandidates(pending);
-                  console.log('AdminDashboard: Refreshed candidates from API:', candidates.length);
+                  alert(`✅ Loaded ${candidates.length} candidates from database (${pending.length} pending)`);
+                } else {
+                  console.error('Invalid candidates response:', candidates);
+                  alert('❌ Invalid response from database');
                 }
               } catch (error) {
-                console.log('AdminDashboard: API refresh failed, keeping existing data');
+                console.error('Error loading candidates:', error);
+                alert(`❌ Failed to load candidates: ${error.message}`);
               }
             }}><FaSyncAlt /> Refresh</button>
+            <button className="btn btn-warning" onClick={async () => {
+              try {
+                // Get fresh data
+                const [candidatesResponse, electionsResponse] = await Promise.all([
+                  apiCall('/candidates'),
+                  apiCall('/elections')
+                ]);
+                
+                const approvedCandidates = (candidatesResponse || []).filter(c => c.status === 'APPROVED');
+                const elections = electionsResponse || [];
+                
+                if (approvedCandidates.length === 0) {
+                  alert('No approved candidates found. Please approve some candidates first.');
+                  return;
+                }
+                
+                if (elections.length === 0) {
+                  alert('No elections found. Please create an election first.');
+                  return;
+                }
+                
+                let totalAssigned = 0;
+                
+                // Assign to each active election
+                for (const election of elections) {
+                  if (election.status !== 'COMPLETED') {
+                    try {
+                      const response = await fetch(`${BASE_API_URL}/api/voting/assign-candidates/${election.id}`, {
+                        method: 'POST',
+                        headers: getAuthHeaders()
+                      });
+                      if (response.ok) {
+                        const result = await response.json();
+                        totalAssigned += result.assignedCount || 0;
+                      }
+                    } catch (err) {
+                      console.warn(`Failed to assign to election ${election.id}:`, err);
+                    }
+                  }
+                }
+                
+                alert(`✅ Auto-Assignment Complete!\n${approvedCandidates.length} approved candidates\n${totalAssigned} assignments made`);
+                loadElections(); // Refresh elections
+              } catch (error) {
+                alert('❌ Auto-assignment failed: ' + error.message);
+              }
+            }}>🚀 Fix & Assign All</button>
           </div>
           <div className="data-table">
             <h4>All Candidates ({data.candidates?.length || 0})</h4>
@@ -1605,7 +1871,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
                     <tr key={candidate.id}>
                       <td>{candidate.name}</td>
                       <td>{candidate.party || 'Independent'}</td>
-                      <td>{candidate.election?.title || 'Not Assigned'}</td>
+                      <td>{candidate.election?.title || candidate.electionTitle || 'Not Assigned'}</td>
                       <td>
                         <span className={`status ${candidate.status?.toLowerCase()}`}>
                           {candidate.status}
@@ -1633,6 +1899,69 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
                         >
                           Reject
                         </button>
+                        <button 
+                          className="btn btn-sm btn-danger"
+                          onClick={async () => {
+                            if (window.confirm(`Delete candidate "${candidate.name}"? This action cannot be undone.`)) {
+                              try {
+                                console.log('AdminDashboard: Deleting candidate with ID:', candidate.id);
+                                
+                                // Check if backend is accessible
+                                const token = secureStorage.getToken();
+                                if (!token) {
+                                  throw new Error('Not authenticated. Please log in again.');
+                                }
+                                
+                                const response = await apiCall(`/candidates/${candidate.id}`, { method: 'DELETE' });
+                                
+                                if (response && (response.success !== false)) {
+                                  console.log('AdminDashboard: Candidate deleted successfully:', response);
+                                  
+                                  // Remove from local state
+                                  const updatedCandidates = data.candidates.filter(c => c.id !== candidate.id);
+                                  setData(prev => ({ ...prev, candidates: updatedCandidates }));
+                                  localStorage.setItem('voterow_candidates', JSON.stringify(updatedCandidates));
+                                  
+                                  // Refresh from database
+                                  await loadData2('candidates');
+                                  
+                                  alert('Candidate deleted successfully');
+                                } else {
+                                  throw new Error(response?.message || 'Delete failed');
+                                }
+                              } catch (err) {
+                                console.error('AdminDashboard: Error deleting candidate:', err);
+                                
+                                // Provide more specific error messages
+                                let errorMessage = 'Failed to delete candidate';
+                                if (err.message) {
+                                  if (err.message.includes('fetch')) {
+                                    errorMessage = 'Cannot connect to server. Please check if the backend is running.';
+                                  } else if (err.message.includes('401') || err.message.includes('Unauthorized')) {
+                                    errorMessage = 'Authentication failed. Please log in again.';
+                                  } else if (err.message.includes('404')) {
+                                    errorMessage = 'Candidate not found. It may have already been deleted.';
+                                  } else {
+                                    errorMessage = `Failed to delete candidate: ${err.message}`;
+                                  }
+                                }
+                                
+                                alert(errorMessage);
+                              }
+                            }
+                          }}
+                        >
+                          <FaTrash />
+                        </button>
+                        {candidate.status === 'APPROVED' && (
+                          <button 
+                            className="btn btn-sm btn-info"
+                            onClick={() => { setAssigningCandidate(candidate); setAssignElectionId(''); setShowAssignModal(true); }}
+                            title="Assign to Election"
+                          >
+                            Assign
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -1766,55 +2095,156 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
           </div>
         )}
         
+        {/* Assign to Election Modal */}
+        {showAssignModal && assigningCandidate && (
+          <div className="modal-overlay">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h3>Assign "{assigningCandidate.name}" to Election</h3>
+                <button className="close-btn" onClick={() => setShowAssignModal(false)}><FaTimes /></button>
+              </div>
+              <div className="modal-body">
+                <div className="form-group">
+                  <label>Select Election</label>
+                  <select className="form-control" value={assignElectionId} onChange={e => setAssignElectionId(e.target.value)}>
+                    <option value="">-- Select Election --</option>
+                    {data.elections.filter(e => e.status !== 'COMPLETED').map(e => (
+                      <option key={e.id} value={e.id}>{e.title} ({e.status})</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button className="btn btn-secondary" onClick={() => setShowAssignModal(false)}>Cancel</button>
+                <button className="btn btn-primary" disabled={!assignElectionId} onClick={async () => {
+                  try {
+                    await apiCall(`/elections/${assignElectionId}/assign-candidates`, {
+                      method: 'POST',
+                      body: JSON.stringify({ candidateIds: [assigningCandidate.id] })
+                    });
+                    alert(`${assigningCandidate.name} assigned successfully!`);
+                    setShowAssignModal(false);
+                    loadElections();
+                    await loadData2('candidates');
+                  } catch (err) {
+                    alert('Failed to assign: ' + err.message);
+                  }
+                }}>Assign</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Approve Candidates Modal */}
         {showApproveModal && (
           <div className="modal-overlay">
             <div className="modal-content">
               <div className="modal-header">
-                <h3>Approve Candidates</h3>
+                <h3>Approve Candidates ({pendingCandidates.length} pending)</h3>
                 <button className="close-btn" onClick={() => setShowApproveModal(false)}><FaTimes /></button>
               </div>
               <div className="modal-body">
                 {pendingCandidates.length > 0 ? (
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>Party</th>
-                        <th>Status</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pendingCandidates.map(candidate => (
-                        <tr key={candidate.id}>
-                          <td>{candidate.name}</td>
-                          <td>{candidate.party || 'Independent'}</td>
-                          <td>
-                            <span className="status pending">
-                              {candidate.status}
-                            </span>
-                          </td>
-                          <td>
-                            <button 
-                              className="btn btn-sm btn-success"
-                              onClick={() => handleCandidateStatus(candidate, 'APPROVED')}
-                            >
-                              Approve
-                            </button>
-                            <button 
-                              className="btn btn-sm btn-danger"
-                              onClick={() => handleCandidateStatus(candidate, 'REJECTED')}
-                            >
-                              Reject
-                            </button>
-                          </td>
+                  <>
+                    <div className="approval-info">
+                      <p><strong>Found {pendingCandidates.length} candidate(s) awaiting approval:</strong></p>
+                    </div>
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Email</th>
+                          <th>Party</th>
+                          <th>Applied Date</th>
+                          <th>Status</th>
+                          <th>Actions</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {pendingCandidates.map(candidate => (
+                          <tr key={candidate.id}>
+                            <td>{candidate.name}</td>
+                            <td>{candidate.email}</td>
+                            <td>{candidate.party || 'Independent'}</td>
+                            <td>{candidate.appliedDate ? new Date(candidate.appliedDate).toLocaleDateString() : 'N/A'}</td>
+                            <td>
+                              <span className="status pending">
+                                {candidate.status || 'PENDING'}
+                              </span>
+                            </td>
+                            <td>
+                              <button 
+                                className="btn btn-sm btn-success"
+                                onClick={() => handleCandidateStatus(candidate, 'APPROVED')}
+                                title="Approve this candidate"
+                              >
+                                ✓ Approve
+                              </button>
+                              <button 
+                                className="btn btn-sm btn-danger"
+                                onClick={() => handleCandidateStatus(candidate, 'REJECTED')}
+                                title="Reject this candidate"
+                              >
+                                ✗ Reject
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
                 ) : (
-                  <p className="empty-state">No pending candidates to approve.</p>
+                  <div className="empty-state">
+                    <p><strong>No pending candidates to approve.</strong></p>
+                    <p>Candidates will appear here when they submit applications for elections.</p>
+                    <div style={{ marginTop: '15px' }}>
+                      <button 
+                        className="btn btn-primary"
+                        onClick={async () => {
+                          // Refresh candidates data
+                          try {
+                            const candidates = await apiCall('/candidates');
+                            if (candidates && Array.isArray(candidates)) {
+                              setData(prev => ({ ...prev, candidates }));
+                              const pending = candidates.filter(c => {
+                                const status = c.status?.toLowerCase();
+                                const isVerified = c.isVerified;
+                                return status === 'pending' || (!isVerified && status !== 'approved' && status !== 'rejected');
+                              });
+                              setPendingCandidates(pending);
+                              if (pending.length > 0) {
+                                alert(`Found ${pending.length} pending candidates after refresh!`);
+                              }
+                            } else {
+                              // Check localStorage
+                              const localCandidates = JSON.parse(localStorage.getItem('voterow_candidates')) || [];
+                              if (localCandidates.length > 0) {
+                                setData(prev => ({ ...prev, candidates: localCandidates }));
+                                const pending = localCandidates.filter(c => {
+                                  const status = c.status?.toLowerCase();
+                                  const isVerified = c.isVerified;
+                                  return status === 'pending' || (!isVerified && status !== 'approved' && status !== 'rejected');
+                                });
+                                setPendingCandidates(pending);
+                                if (pending.length > 0) {
+                                  alert(`Found ${pending.length} pending candidates in local storage!`);
+                                } else {
+                                  alert('No pending candidates found. Make sure candidates have submitted applications.');
+                                }
+                              } else {
+                                alert('No candidate data found. Candidates need to submit applications first.');
+                              }
+                            }
+                          } catch (error) {
+                            console.error('Error refreshing candidates:', error);
+                            alert('Error refreshing data. Check console for details.');
+                          }
+                        }}
+                      >
+                        🔄 Refresh Candidates
+                      </button>
+                    </div>
+                  </div>
                 )}
                 <div className="form-actions">
                   <button className="btn btn-secondary" onClick={() => setShowApproveModal(false)}>Close</button>
@@ -1854,21 +2284,17 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
       setShowScheduleModal(true);
     };
     
-    const handleAssignCandidates = (election) => {
+    const handleAssignCandidates = async (election) => {
       setSelectedElection(election);
-      
-      // Load approved candidates from localStorage (since API returns 403)
-      const localCandidates = JSON.parse(localStorage.getItem('voterow_candidates')) || [];
-      const approvedCandidates = localCandidates.filter(c => 
-        c.status === 'Approved' || c.status === 'ACTIVE'
-      );
-      console.log('All local candidates:', localCandidates);
-      console.log('Approved candidates for assignment:', approvedCandidates);
-      setAvailableCandidates(approvedCandidates);
-      
-      // Get currently assigned candidates
       setSelectedCandidates(election.participants || []);
-      
+      try {
+        const candidates = await apiCall('/candidates');
+        const approved = (candidates || []).filter(c => c.status === 'APPROVED');
+        setAvailableCandidates(approved);
+      } catch {
+        const local = JSON.parse(localStorage.getItem('voterow_candidates')) || [];
+        setAvailableCandidates(local.filter(c => c.status === 'APPROVED'));
+      }
       setShowAssignCandidatesModal(true);
     };
     
@@ -1896,62 +2322,24 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
     
     const handleSaveAssignments = async () => {
       try {
-        console.log('Saving candidate assignments:', selectedCandidates);
-        
-        try {
-          // Try database first - use different endpoint
-          await apiCall(`/elections/${selectedElection.id}`, {
-            method: 'PUT',
-            body: JSON.stringify({
-              ...selectedElection,
-              participants: selectedCandidates
-            })
-          });
-          console.log('Database assignment successful');
-          // Update local state immediately
-          const updatedElections = data.elections.map(election => {
-            if (election.id === selectedElection.id) {
-              return {
-                ...election,
-                participants: selectedCandidates,
-                candidateCount: selectedCandidates.length
-              };
-            }
-            return election;
-          });
-          setData(prev => ({ ...prev, elections: updatedElections }));
-        } catch (apiError) {
-          console.log('Database failed, using localStorage fallback');
-          // Fallback to localStorage
-          const allElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
-          const updatedElections = allElections.map(election => {
-            if (election.id === selectedElection.id) {
-              return {
-                ...election,
-                participants: selectedCandidates,
-                candidateCount: selectedCandidates.length,
-                votes: election.votes || {}
-              };
-            }
-            return election;
-          });
-          localStorage.setItem('voterow_elections', JSON.stringify(updatedElections));
-          setData(prev => ({ ...prev, elections: updatedElections }));
-        }
-        
-        alert("Candidate assignments updated successfully!");
-        setShowAssignCandidatesModal(false);
-        
-        // Force immediate UI update from localStorage
-        const refreshedElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
-        const electionsWithCount = refreshedElections.map(election => ({
-          ...election,
-          candidateCount: election.participants ? election.participants.length : 0
+        await apiCall(`/elections/${selectedElection.id}/assign-candidates`, {
+          method: 'POST',
+          body: JSON.stringify({ candidateIds: selectedCandidates })
+        });
+        setData(prev => ({
+          ...prev,
+          elections: prev.elections.map(e =>
+            e.id === selectedElection.id
+              ? { ...e, participants: selectedCandidates, candidateCount: selectedCandidates.length }
+              : e
+          )
         }));
-        setData(prev => ({ ...prev, elections: electionsWithCount }));
+        alert('Candidate assignments saved successfully!');
+        setShowAssignCandidatesModal(false);
+        loadData('elections');
       } catch (err) {
-        console.error("Error saving candidate assignments:", err);
-        alert("Failed to update candidate assignments. Please try again.");
+        console.error('Error saving candidate assignments:', err);
+        alert('Failed to save assignments: ' + err.message);
       }
     };
     
@@ -2049,6 +2437,61 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
                         title="End Election"
                       >
                         <FaStop />
+                      </button>
+                      <button 
+                        className="btn btn-sm btn-danger" 
+                        onClick={async () => {
+                          if (window.confirm(`Delete election "${election.title}"? This action cannot be undone.`)) {
+                            try {
+                              console.log('AdminDashboard: Deleting election with ID:', election.id);
+                              
+                              // Check if backend is accessible
+                              const token = secureStorage.getToken();
+                              if (!token) {
+                                throw new Error('Not authenticated. Please log in again.');
+                              }
+                              
+                              const response = await apiCall(`/elections/${election.id}`, { method: 'DELETE' });
+                              
+                              if (response) {
+                                console.log('AdminDashboard: Election deleted successfully:', response);
+                                
+                                // Remove from local state
+                                const updatedElections = data.elections.filter(e => e.id !== election.id);
+                                setData(prev => ({ ...prev, elections: updatedElections }));
+                                localStorage.setItem('voterow_elections', JSON.stringify(updatedElections));
+                                
+                                // Refresh from database to ensure consistency
+                                await loadElections();
+                                
+                                alert('Election deleted successfully');
+                              } else {
+                                throw new Error('No response from server');
+                              }
+                            } catch (err) {
+                              console.error('AdminDashboard: Error deleting election:', err);
+                              
+                              // Provide more specific error messages
+                              let errorMessage = 'Failed to delete election';
+                              if (err.message) {
+                                if (err.message.includes('fetch')) {
+                                  errorMessage = 'Cannot connect to server. Please check if the backend is running.';
+                                } else if (err.message.includes('401') || err.message.includes('Unauthorized')) {
+                                  errorMessage = 'Authentication failed. Please log in again.';
+                                } else if (err.message.includes('404')) {
+                                  errorMessage = 'Election not found. It may have already been deleted.';
+                                } else {
+                                  errorMessage = `Failed to delete election: ${err.message}`;
+                                }
+                              }
+                              
+                              alert(errorMessage);
+                            }
+                          }
+                        }}
+                        title="Delete Election"
+                      >
+                        <FaTrash />
                       </button>
                     </td>
                   </tr>
@@ -2162,73 +2605,198 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
   };
 
   // Module 5: Voting Process Control Component
-  const VotingControlModule = () => (
-    <div className="admin-module">
-      <h3 className="module-title"><FaPlay /> Voting Process Control</h3>
-      <div className="module-content">
-        <div className="control-panel">
-          <div className="control-card">
-            <h4>Election Control</h4>
-            <div className="control-buttons">
-              <button className="btn btn-success btn-lg"><FaPlay /> Start Election</button>
-              <button className="btn btn-danger btn-lg"><FaStop /> Stop Election</button>
+  const VotingControlModule = () => {
+    const [votingElections, setVotingElections] = useState(data.elections || []);
+    const [voteCounts, setVoteCounts] = useState({});
+
+    useEffect(() => {
+      apiCall('/elections')
+        .then(elections => { if (elections) setVotingElections(elections); })
+        .catch(() => setVotingElections(data.elections || []));
+    }, []);
+
+    const handleStart = async (election) => {
+      try {
+        await apiCall(`/elections/${election.id}/start`, { method: 'POST' });
+        setVotingElections(prev => prev.map(e => e.id === election.id ? { ...e, status: 'ACTIVE' } : e));
+        setData(prev => ({ ...prev, elections: prev.elections.map(e => e.id === election.id ? { ...e, status: 'ACTIVE' } : e) }));
+        alert(`Election "${election.title}" started successfully!`);
+      } catch (err) { alert('Failed to start election: ' + err.message); }
+    };
+
+    const handleStop = async (election) => {
+      if (!window.confirm(`End election "${election.title}"?`)) return;
+      try {
+        await apiCall(`/elections/${election.id}/end`, { method: 'POST' });
+        setVotingElections(prev => prev.map(e => e.id === election.id ? { ...e, status: 'COMPLETED' } : e));
+        setData(prev => ({ ...prev, elections: prev.elections.map(e => e.id === election.id ? { ...e, status: 'COMPLETED' } : e) }));
+        alert(`Election "${election.title}" ended successfully!`);
+      } catch (err) { alert('Failed to end election: ' + err.message); }
+    };
+
+    const handleGetVoteCount = async (election) => {
+      try {
+        const result = await apiCall(`/elections/${election.id}/vote-count`);
+        setVoteCounts(prev => ({ ...prev, [election.id]: result.totalVotes || 0 }));
+      } catch { setVoteCounts(prev => ({ ...prev, [election.id]: 'N/A' })); }
+    };
+
+    return (
+      <div className="admin-module">
+        <h3 className="module-title"><FaPlay /> Voting Process Control</h3>
+        <div className="module-content">
+          {votingElections.length === 0 ? (
+            <p>No elections found. <button className="btn btn-primary btn-sm" onClick={() => setActiveTab('elections')}>Create an election</button></p>
+          ) : (
+            <div className="data-table">
+              <table className="table">
+                <thead>
+                  <tr><th>Election</th><th>Status</th><th>Vote Count</th><th>Actions</th></tr>
+                </thead>
+                <tbody>
+                  {votingElections.map(election => (
+                    <tr key={election.id}>
+                      <td>{election.title}</td>
+                      <td><span className={`status ${election.status?.toLowerCase()}`}>{election.status}</span></td>
+                      <td>
+                        {voteCounts[election.id] !== undefined ? voteCounts[election.id] : '—'}
+                        <button className="btn btn-sm btn-info" style={{marginLeft:'8px'}} onClick={() => handleGetVoteCount(election)}><FaEye /></button>
+                      </td>
+                      <td>
+                        <button
+                          className="btn btn-sm btn-success"
+                          onClick={() => handleStart(election)}
+                          disabled={election.status === 'ACTIVE' || election.status === 'COMPLETED'}
+                          title="Start Election"
+                        ><FaPlay /></button>
+                        <button
+                          className="btn btn-sm btn-danger"
+                          onClick={() => handleStop(election)}
+                          disabled={election.status !== 'ACTIVE'}
+                          title="End Election"
+                        ><FaStop /></button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </div>
-          <div className="control-card">
-            <h4>Live Monitoring</h4>
-            <div className="live-stats">
-              <div className="stat-item">
-                <span className="stat-label">Active Voters:</span>
-                <span className="stat-value">156</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-label">Total Votes:</span>
-                <span className="stat-value">1,247</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-label">Turnout:</span>
-                <span className="stat-value">62.3%</span>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="activity-feed">
-          <h4>Recent Activity</h4>
-          <div className="activity-list">
-            <div className="activity-item">Voter #1247 cast vote - 2 minutes ago</div>
-            <div className="activity-item">Voter #1246 cast vote - 3 minutes ago</div>
-            <div className="activity-item">Voter #1245 cast vote - 4 minutes ago</div>
-          </div>
+          )}
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   // Module 6: Results & Analytics Component
-  const ResultsModule = () => (
-    <div className="admin-module">
-      <h3 className="module-title"><FaChartBar /> Results Management & Analytics</h3>
-      <div className="module-content">
-        <div className="action-buttons">
-          <button className="btn btn-primary"><FaPlay /> Count Votes</button>
-          <button className="btn btn-success"><FaEye /> View Results</button>
-          <button className="btn btn-info"><FaFileExport /> Publish Results</button>
-          <button className="btn btn-secondary"><FaDownload /> Download Report</button>
-        </div>
-        <div className="results-overview">
-          <div className="result-card">
-            <h4>Election Results</h4>
-            <div className="result-stats">
-              <div className="stat">Total Votes: <strong>1,247</strong></div>
-              <div className="stat">Valid Votes: <strong>1,235</strong></div>
-              <div className="stat">Invalid Votes: <strong>12</strong></div>
-              <div className="stat">Turnout: <strong>62.3%</strong></div>
+  const ResultsModule = () => {
+    const [resultsElections, setResultsElections] = useState([]);
+    const [selectedResult, setSelectedResult] = useState(null);
+    const [resultData, setResultData] = useState(null);
+    const [loadingResult, setLoadingResult] = useState(false);
+
+    useEffect(() => {
+      apiCall('/elections')
+        .then(elections => {
+          if (elections) setResultsElections(elections.filter(e => e.status === 'COMPLETED' || e.status === 'RESULTS_PUBLISHED'));
+        })
+        .catch(() => {});
+    }, []);
+
+    const handleCalculate = async (election) => {
+      setLoadingResult(true);
+      setSelectedResult(election);
+      try {
+        const data = await apiCall(`/elections/${election.id}/results/calculate`);
+        setResultData(data);
+      } catch (err) {
+        alert('Failed to calculate results: ' + err.message);
+      } finally {
+        setLoadingResult(false);
+      }
+    };
+
+    const handlePublishResults = async (election) => {
+      if (!window.confirm(`Publish results for "${election.title}"? This will make results visible to voters.`)) return;
+      try {
+        await apiCall(`/elections/${election.id}/publish-results`, { method: 'POST' });
+        alert('Results published successfully!');
+        setResultsElections(prev => prev.map(e =>
+          e.id === election.id ? { ...e, status: 'RESULTS_PUBLISHED' } : e
+        ));
+        setData(prev => ({ ...prev, elections: prev.elections.map(e =>
+          e.id === election.id ? { ...e, status: 'RESULTS_PUBLISHED' } : e
+        )}));
+      } catch (err) {
+        alert('Failed to publish results: ' + err.message);
+      }
+    };
+
+    return (
+      <div className="admin-module">
+        <h3 className="module-title"><FaChartBar /> Results Management & Analytics</h3>
+        <div className="module-content">
+          {resultsElections.length === 0 ? (
+            <p>No completed elections found. End an active election first.</p>
+          ) : (
+            <div className="data-table">
+              <table className="table">
+                <thead>
+                  <tr><th>Election</th><th>Status</th><th>Actions</th></tr>
+                </thead>
+                <tbody>
+                  {resultsElections.map(election => (
+                    <tr key={election.id}>
+                      <td>{election.title}</td>
+                      <td><span className={`status ${election.status?.toLowerCase()}`}>{election.status}</span></td>
+                      <td>
+                        <button className="btn btn-sm btn-primary" onClick={() => handleCalculate(election)}>
+                          <FaChartBar /> Count Votes
+                        </button>
+                        {election.status === 'COMPLETED' && (
+                          <button className="btn btn-sm btn-success" style={{marginLeft:'6px'}} onClick={() => handlePublishResults(election)}>
+                            <FaFileExport /> Publish Results
+                          </button>
+                        )}
+                      </td>
+
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </div>
+          )}
+
+          {loadingResult && <p>Calculating results...</p>}
+
+          {resultData && selectedResult && (
+            <div className="result-card" style={{marginTop:'20px'}}>
+              <h4>Results: {selectedResult.title}</h4>
+              <div className="result-stats">
+                <div className="stat">Total Votes: <strong>{resultData.totalVotes}</strong></div>
+              </div>
+              {resultData.candidateResults && resultData.candidateResults.length > 0 ? (
+                <table className="table" style={{marginTop:'10px'}}>
+                  <thead><tr><th>Candidate ID</th><th>Votes</th><th>Percentage</th></tr></thead>
+                  <tbody>
+                    {resultData.candidateResults.map((r, i) => (
+                      <tr key={i} style={r.candidateId === resultData.winnerId ? {fontWeight:'bold', background:'#e6ffe6'} : {}}>
+                        <td>{r.candidateId} {r.candidateId === resultData.winnerId ? '🏆 Winner' : ''}</td>
+                        <td>{r.votes}</td>
+                        <td>{r.percentage?.toFixed(1)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p>No votes recorded for this election.</p>
+
+              )}
+            </div>
+          )}
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   // Module 7: Security & Audit Component
   const SecurityModule = () => (
@@ -2437,10 +3005,11 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
       setSuccess('');
       
       try {
-        const response = await fetch(`http://localhost:8081/api/auth/profile?email=${encodeURIComponent(user.email)}`, {
+  const response = await fetch(`${BASE_API_URL}/api/auth/profile`, {
           method: 'PUT',
           headers: {
-            'Content-Type': 'application/json',
+          'Content-Type': 'application/json',
+          ...(secureStorage.getToken() ? { Authorization: `Bearer ${secureStorage.getToken()}` } : {}),
           },
           body: JSON.stringify({
             fullName: editData.fullName,
@@ -2482,9 +3051,8 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
             onUpdateUser(completeUpdatedUser);
           }
           
-          // Also update the global function for backwards compatibility
-          if (window.updateUserProfile) {
-            window.updateUserProfile(completeUpdatedUser);
+          if (window.__voterowUpdateUser) {
+            window.__voterowUpdateUser(completeUpdatedUser);
           }
         } else {
           const errorText = await response.text();
@@ -2516,13 +3084,12 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
         setSuccess('Profile updated locally (backend unavailable)');
         setIsEditing(false);
         
-        // Update parent component
         if (onUpdateUser) {
           onUpdateUser(localUpdatedUser);
         }
         
-        if (window.updateUserProfile) {
-          window.updateUserProfile(localUpdatedUser);
+        if (window.__voterowUpdateUser) {
+          window.__voterowUpdateUser(localUpdatedUser);
         }
         
         setError('Network error, but changes saved locally. They will sync when the server is available.');
@@ -2706,7 +3273,23 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
                     <h5>Change Password</h5>
                     <p>Update your account password</p>
                   </div>
-                  <button className="btn btn-warning">Change Password</button>
+                  <button className="btn btn-warning" onClick={() => {
+                    const current = prompt('Enter current password:');
+                    if (!current) return;
+                    const newPwd = prompt('Enter new password (min 8 chars):');
+                    if (!newPwd || newPwd.length < 8) { alert('Password must be at least 8 characters.'); return; }
+                    const confirm = prompt('Confirm new password:');
+                    if (newPwd !== confirm) { alert('Passwords do not match.'); return; }
+                    const token = secureStorage.getToken();
+                    fetch(`${BASE_API_URL}/api/auth/change-password`, {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                      body: JSON.stringify({ currentPassword: current, newPassword: newPwd, confirmPassword: confirm })
+                    }).then(async r => {
+                      if (r.ok) alert('Password changed successfully!');
+                      else { const t = await r.text(); alert('Failed: ' + (t || r.status)); }
+                    }).catch(e => alert('Error: ' + e.message));
+                  }}>Change Password</button>
                 </div>
                 <div className="security-item">
                   <div className="security-info">
@@ -2818,6 +3401,44 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
     </div>
   );
 
+  // Module: Reports & Export Component
+  const ReportsModule = () => {
+    const handleExport = async (type) => {
+      try {
+        const token = secureStorage.getToken();
+        const url = type === 'voters'
+          ? `${BASE_API_URL}/api/admin/voters/export`
+          : `${BASE_API_URL}/api/admin/elections`;
+        const response = await fetch(url, { headers: getAuthHeaders() });
+        if (!response.ok) throw new Error('Export failed');
+        const blob = await response.blob();
+        const a = document.createElement('a');
+        a.href = window.URL.createObjectURL(blob);
+        a.download = `${type}-export.${type === 'voters' ? 'csv' : 'json'}`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(a.href);
+        document.body.removeChild(a);
+      } catch (err) { alert('Export failed: ' + err.message); }
+    };
+    return (
+      <div className="admin-module">
+        <h3 className="module-title"><FaFileExport /> Reports & Export</h3>
+        <div className="module-content">
+          <div className="action-buttons">
+            <button className="btn btn-primary" onClick={() => handleExport('voters')}><FaDownload /> Export Voters CSV</button>
+            <button className="btn btn-secondary" onClick={() => handleExport('elections')}><FaDownload /> Export Elections JSON</button>
+          </div>
+          <div className="info-cards" style={{marginTop:'20px'}}>
+            <div className="info-card"><h4>Total Voters</h4><p className="stat-number">{data.voters?.length || 0}</p></div>
+            <div className="info-card"><h4>Total Elections</h4><p className="stat-number">{data.elections?.length || 0}</p></div>
+            <div className="info-card"><h4>Total Candidates</h4><p className="stat-number">{data.candidates?.length || 0}</p></div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // Module 10: System Settings Component
   const SystemSettingsModule = () => (
     <div className="admin-module">
@@ -2873,29 +3494,115 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
 
   // Render the appropriate module based on active tab - Memoized to prevent unnecessary re-renders
   const renderActiveModule = useCallback(() => {
-    switch (activeTab) {
-      case 'home': return <HomeModule key="home" />;
-      case 'profile': return <ProfileModule key="profile" />;
-      case 'overview': return <DashboardOverviewModule key="overview" />;
-      case 'auth': return <AuthenticationModule key="auth" />;
-      case 'voters': return <VoterManagementModule key="voters" voters={data.voters} setData={setData} data={data} loadData={loadData} />;
-      case 'candidates': return <CandidateManagementModule key="candidates" />;
-      case 'elections': return <ElectionManagementModule key="elections" 
-        data={data} 
-        setData={setData} 
-        loadData={loadData}
-        handleCreateElection={handleCreateElection}
-      />;
-      case 'voting': return <VotingControlModule key="voting" />;
-      case 'results': return <ResultsModule key="results" />;
-      case 'security': return <SecurityModule key="security" />;
-      case 'notifications': return <CommunicationModule key="notifications" />;
-      case 'settings': return <SystemSettingsModule key="settings" />;
-      default: return <HomeModule key="default" />;
+    try {
+      switch (activeTab) {
+        case 'home': 
+          return (
+            <ErrorBoundary componentName="Home Module">
+              <HomeModule key="home" />
+            </ErrorBoundary>
+          );
+        case 'profile': 
+          return (
+            <ErrorBoundary componentName="Profile Module">
+              <ProfileModule key="profile" />
+            </ErrorBoundary>
+          );
+        case 'overview': 
+          return (
+            <ErrorBoundary componentName="Overview Module">
+              <DashboardOverviewModule key="overview" />
+            </ErrorBoundary>
+          );
+        case 'auth': 
+          return (
+            <ErrorBoundary componentName="Authentication Module">
+              <AuthenticationModule key="auth" />
+            </ErrorBoundary>
+          );
+        case 'voters': 
+          return (
+            <ErrorBoundary componentName="Voter Management Module">
+              <VoterManagementModule key="voters" voters={data.voters || []} setData={setData} data={data} loadData={loadData} />
+            </ErrorBoundary>
+          );
+        case 'candidates': 
+          return (
+            <ErrorBoundary componentName="Candidate Management Module">
+              <CandidateManagementModule key="candidates" />
+            </ErrorBoundary>
+          );
+        case 'elections': 
+          return (
+            <ErrorBoundary componentName="Election Management Module">
+              <ElectionManagementModule key="elections" 
+                data={data} 
+                setData={setData} 
+                loadData={loadData}
+                handleCreateElection={handleCreateElection}
+              />
+            </ErrorBoundary>
+          );
+        case 'voting': 
+          return (
+            <ErrorBoundary componentName="Voting Control Module">
+              <VotingControlModule key="voting" />
+            </ErrorBoundary>
+          );
+        case 'results': 
+          return (
+            <ErrorBoundary componentName="Results Module">
+              <ResultsModule key="results" />
+            </ErrorBoundary>
+          );
+        case 'security': 
+          return (
+            <ErrorBoundary componentName="Security Module">
+              <SecurityModule key="security" />
+            </ErrorBoundary>
+          );
+        case 'notifications': 
+          return (
+            <ErrorBoundary componentName="Communication Module">
+              <CommunicationModule key="notifications" />
+            </ErrorBoundary>
+          );
+        case 'reports':
+          return (
+            <ErrorBoundary componentName="Reports Module">
+              <ReportsModule key="reports" />
+            </ErrorBoundary>
+          );
+        case 'settings': 
+          return (
+            <ErrorBoundary componentName="System Settings Module">
+              <SystemSettingsModule key="settings" />
+            </ErrorBoundary>
+          );
+        default: 
+          return (
+            <ErrorBoundary componentName="Default Home Module">
+              <HomeModule key="default" />
+            </ErrorBoundary>
+          );
+      }
+    } catch (error) {
+      console.error('Error in renderActiveModule:', error);
+      return (
+        <div style={{ padding: '20px', color: 'red' }}>
+          <h3>Error loading module: {activeTab}</h3>
+          <p>Please try refreshing the page or selecting a different tab.</p>
+          <button onClick={() => setActiveTab('home')}>Go to Home</button>
+        </div>
+      );
     }
   }, [activeTab, data, loadData, handleCreateElection]);
 
   // Removed duplicate ElectionModal component - using inline modal in ElectionManagementModule instead
+
+  if (!user) {
+    return <div className="admin-dashboard"><div className="loading-message"><p>Loading admin data...</p></div></div>;
+  }
 
   return (
     <div className="admin-dashboard">
@@ -3016,7 +3723,7 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
               </button>
             </div>
             <div className="modal-body">
-              <form onSubmit={(e) => { e.preventDefault(); handleSaveElection(); }}>
+              <form id="election-form" onSubmit={(e) => { e.preventDefault(); handleSaveElection(); }}>
                 <div className="form-group">
                   <label>Election Title *</label>
                   <input
@@ -3075,15 +3782,15 @@ const AdminDashboard = ({ user, onUpdateUser }) => {
                     <option value="CANCELLED">Cancelled</option>
                   </select>
                 </div>
-                <div className="form-actions">
-                  <button type="button" className="btn btn-secondary" onClick={() => setShowElectionModal(false)}>
-                    Cancel
-                  </button>
-                  <button type="submit" className="btn btn-primary">
-                    {editingElection ? 'Update Election' : 'Create Election'}
-                  </button>
-                </div>
               </form>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-secondary" onClick={() => setShowElectionModal(false)}>
+                Cancel
+              </button>
+              <button type="button" className="btn btn-primary" onClick={handleSaveElection}>
+                {editingElection ? 'Update Election' : 'Create Election'}
+              </button>
             </div>
           </div>
         </div>

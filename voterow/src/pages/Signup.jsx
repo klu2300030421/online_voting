@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { getApiUrl } from '../config/apiConfig';
 
 const Signup = ({ onLogin }) => {
   const [fullName, setFullName] = useState('');
@@ -22,8 +23,9 @@ const Signup = ({ onLogin }) => {
         backendUserType = 'PARTICIPANT';
       }
 
-      const response = await fetch('http://localhost:8081/api/auth/signup', {
+      const response = await fetch(getApiUrl('/api/auth/signup'), {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
         },
@@ -38,8 +40,9 @@ const Signup = ({ onLogin }) => {
 
       if (response.ok) {
         // Registration successful, now try to login
-        const loginResponse = await fetch('http://localhost:8081/api/auth/login', {
+        const loginResponse = await fetch(getApiUrl('/api/auth/login'), {
           method: 'POST',
+          credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
           },
@@ -51,7 +54,8 @@ const Signup = ({ onLogin }) => {
 
         if (loginResponse.ok) {
           // Login successful, parse user info directly from login response
-          const userInfo = await loginResponse.json();
+          const loginPayload = await loginResponse.json();
+          const userInfo = loginPayload.user || loginPayload;
           
           // Map backend user types to frontend display types
           let frontendUserType = userInfo.userType;
@@ -74,9 +78,12 @@ const Signup = ({ onLogin }) => {
             fullName: userInfo.fullName,
             age: userInfo.age,
             email: userInfo.email,
+            phoneNumber: userInfo.phoneNumber,
+            idProofNumber: userInfo.idProofNumber,
+            address: userInfo.address,
             userType: frontendUserType,
           };
-          onLogin(user);
+          onLogin(loginPayload.token ? { user, token: loginPayload.token } : user);
         } else {
           const errorData = await loginResponse.text();
           setError('Registration successful, but automatic login failed: ' + (errorData || 'Please login manually.'));
@@ -86,7 +93,8 @@ const Signup = ({ onLogin }) => {
         setError(errorData || 'Registration failed. Please try again.');
       }
     } catch (err) {
-      setError('Network error. Please check if the backend server is running.');
+      console.error('Signup error:', err);
+      setError('Network error. Please check that the backend server is running.');
     } finally {
       setIsLoading(false);
     }
@@ -111,14 +119,13 @@ const Signup = ({ onLogin }) => {
         </div>
         <div className="form-group">
           <label htmlFor="password">Password</label>
-          <input type="password" id="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength="8" />
+          <input type="password" id="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength="8" autocomplete="new-password" />
         </div>
         <div className="form-group">
           <label htmlFor="userType">Register as</label>
           <select id="userType" value={userType} onChange={(e) => setUserType(e.target.value)}>
             <option value="VOTER">Voter</option>
             <option value="CANDIDATE">Candidate</option>
-            <option value="ADMIN">Admin</option>
           </select>
         </div>
         <button type="submit" className="btn btn-primary" style={{ width: '100%' }} disabled={isLoading}>

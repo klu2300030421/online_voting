@@ -1,9 +1,12 @@
 package com.voterow.backend.service;
 
 import com.voterow.backend.model.Notification;
-import com.voterow.backend.model.Election;
 import com.voterow.backend.model.User;
+import com.voterow.backend.model.Vote;
+import com.voterow.backend.model.ElectionParticipant;
 import com.voterow.backend.repository.NotificationRepository;
+import com.voterow.backend.repository.VoteRepository;
+import com.voterow.backend.repository.ElectionParticipantRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -11,6 +14,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.HashSet;
 
 @Service
 @RequiredArgsConstructor
@@ -18,136 +23,93 @@ import java.util.Optional;
 public class NotificationService {
     
     private final NotificationRepository notificationRepository;
-    private final AuditLogService auditLogService;
+    private final VoteRepository voteRepository;
+    private final ElectionParticipantRepository electionParticipantRepository;
     
     public List<Notification> getAllNotifications() {
         return notificationRepository.findAll();
     }
     
-    public List<Notification> getNotificationsByStatus(Notification.NotificationStatus status) {
-        return notificationRepository.findByStatusOrderByCreatedAtDesc(status);
-    }
-    
-    public List<Notification> getNotificationsByElection(Election election) {
-        return notificationRepository.findByElectionOrderByCreatedAtDesc(election);
+    public List<Notification> getNotificationsByUser(Long userId) {
+        return notificationRepository.findByUserIdOrderByCreatedAtDesc(userId);
     }
     
     public Optional<Notification> getNotificationById(Long id) {
         return notificationRepository.findById(id);
     }
     
-    public Notification createNotification(Notification notification, User createdBy) {
-        notification.setSentBy(createdBy);
-        notification.setCreatedAt(LocalDateTime.now());
-        notification.setStatus(Notification.NotificationStatus.PENDING);
-        
-        Notification saved = notificationRepository.save(notification);
-        
-        auditLogService.logAction(createdBy, "CREATE_NOTIFICATION", "Notification", saved.getId(), 
-            "Created notification: " + notification.getTitle());
-        
-        return saved;
-    }
-    
-    public void sendElectionNotification(Election election, String title, String message, 
-                                       Notification.NotificationType type, User sentBy) {
-        // This would integrate with actual SMS/Email service
-        // For now, we'll just create the notification record
-        
+    public Notification createNotification(User user, String title, String message, String type) {
         Notification notification = new Notification();
+        notification.setUser(user);
         notification.setTitle(title);
         notification.setMessage(message);
-        notification.setType(type);
-        notification.setElection(election);
-        notification.setSentBy(sentBy);
+        notification.setNotificationType(Notification.NotificationType.GENERAL);
         notification.setCreatedAt(LocalDateTime.now());
-        notification.setStatus(Notification.NotificationStatus.PENDING);
-        
-        Notification saved = notificationRepository.save(notification);
-        
-        // Here you would integrate with SMS/Email providers
-        // For demo purposes, we'll mark as sent immediately
-        markAsSent(saved.getId());
-        
-        auditLogService.logAction(sentBy, "SEND_ELECTION_NOTIFICATION", "Notification", saved.getId(), 
-            "Sent election notification: " + title + " for election: " + election.getTitle());
-    }
-    
-    public void sendBulkNotification(String title, String message, 
-                                   List<String> phoneNumbers, List<String> emailAddresses,
-                                   Notification.NotificationType type, User sentBy) {
-        
-        // Create individual notifications for each recipient
-        for (String phone : phoneNumbers) {
-            if (type == Notification.NotificationType.SMS || type == Notification.NotificationType.BOTH) {
-                Notification notification = new Notification();
-                notification.setTitle(title);
-                notification.setMessage(message);
-                notification.setType(Notification.NotificationType.SMS);
-                notification.setRecipientPhone(phone);
-                notification.setSentBy(sentBy);
-                notification.setCreatedAt(LocalDateTime.now());
-                notification.setStatus(Notification.NotificationStatus.PENDING);
-                
-                notificationRepository.save(notification);
-            }
-        }
-        
-        for (String email : emailAddresses) {
-            if (type == Notification.NotificationType.EMAIL || type == Notification.NotificationType.BOTH) {
-                Notification notification = new Notification();
-                notification.setTitle(title);
-                notification.setMessage(message);
-                notification.setType(Notification.NotificationType.EMAIL);
-                notification.setRecipientEmail(email);
-                notification.setSentBy(sentBy);
-                notification.setCreatedAt(LocalDateTime.now());
-                notification.setStatus(Notification.NotificationStatus.PENDING);
-                
-                notificationRepository.save(notification);
-            }
-        }
-        
-        auditLogService.logAction(sentBy, "SEND_BULK_NOTIFICATION", "Notification", null, 
-            "Sent bulk notification: " + title + " to " + 
-            (phoneNumbers.size() + emailAddresses.size()) + " recipients");
-    }
-    
-    public Notification markAsSent(Long id) {
-        Notification notification = notificationRepository.findById(id)
-            .orElseThrow(() -> new RuntimeException("Notification not found"));
-        
-        notification.setStatus(Notification.NotificationStatus.SENT);
-        notification.setSentAt(LocalDateTime.now());
         
         return notificationRepository.save(notification);
     }
     
-    public Notification markAsFailed(Long id, String errorMessage) {
-        Notification notification = notificationRepository.findById(id)
-            .orElseThrow(() -> new RuntimeException("Notification not found"));
-        
-        notification.setStatus(Notification.NotificationStatus.FAILED);
-        notification.setErrorMessage(errorMessage);
-        
-        return notificationRepository.save(notification);
+    public void sendElectionNotification(User user, String title, String message, String type) {
+        createNotification(user, title, message, type);
     }
     
-    public List<Notification> getPendingNotifications() {
-        return notificationRepository.findByStatusOrderByCreatedAtDesc(Notification.NotificationStatus.PENDING);
-    }
-    
-    public void processOldPendingNotifications() {
-        // Mark notifications older than 1 hour as failed
-        LocalDateTime cutoffTime = LocalDateTime.now().minusHours(1);
-        List<Notification> oldNotifications = notificationRepository.findPendingNotificationsOlderThan(cutoffTime);
-        
-        for (Notification notification : oldNotifications) {
-            markAsFailed(notification.getId(), "Timeout - notification not processed within allowed time");
+    public void sendBulkNotification(List<User> users, String title, String message, String type) {
+        for (User user : users) {
+            createNotification(user, title, message, type);
         }
     }
     
-    public Long getNotificationCountByStatus(Notification.NotificationStatus status) {
-        return notificationRepository.countByStatus(status);
+    public Notification markAsRead(Long id) {
+        Notification notification = notificationRepository.findById(id)
+            .orElseThrow(() -> new RuntimeException("Notification not found"));
+        
+        notification.setIsRead(true);
+        return notificationRepository.save(notification);
+    }
+    
+    public long getUnreadCount(Long userId) {
+        return notificationRepository.countByUserIdAndIsReadFalse(userId);
+    }
+    
+    public void sendVoteConfirmation(User user, com.voterow.backend.model.Election election, Long voteId) {
+        String title = "Vote Confirmation";
+        String message = String.format("Your vote has been successfully cast in the election: %s. Vote ID: %d", 
+            election.getTitle(), voteId);
+        createNotification(user, title, message, "VOTE_CONFIRMATION");
+    }
+    
+    public void sendVoterAccessNotification(User user, com.voterow.backend.model.Election election, String accessToken) {
+        String title = "Election Access";
+        String message = String.format("You are now eligible to vote in the election: %s. Access Token: %s", 
+            election.getTitle(), accessToken);
+        createNotification(user, title, message, "ELECTION_ACCESS");
+    }
+    
+    public void sendResultsNotification(com.voterow.backend.model.Election election, List<Object[]> results) {
+        String title = "Election Results Published";
+        String message = String.format("Results for the election '%s' have been published. Check the results page for details.", 
+            election.getTitle());
+        
+        // Get all users who should be notified (voters and candidates)
+        Set<User> usersToNotify = new HashSet<>();
+        
+        // Get all voters who voted in this election
+        List<Vote> votes = voteRepository.findByElection(election);
+        for (Vote vote : votes) {
+            usersToNotify.add(vote.getVoter());
+        }
+        
+        // Get all candidates who participated
+        List<ElectionParticipant> participants = electionParticipantRepository.findByElection(election);
+        for (ElectionParticipant participant : participants) {
+            if (participant.getCandidate() != null && participant.getCandidate().getUser() != null) {
+                usersToNotify.add(participant.getCandidate().getUser());
+            }
+        }
+        
+        // Send notifications to all users
+        for (User user : usersToNotify) {
+            createNotification(user, title, message, "RESULTS");
+        }
     }
 }

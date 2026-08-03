@@ -2,10 +2,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { 
   FaUser, FaIdCard, FaVoteYea, FaTools, FaBell, FaChartBar, 
   FaHome, FaUserEdit, FaImage, FaClipboardList, FaBullhorn, 
-  FaFileAlt, FaCalendarAlt, FaDownload, FaEye, FaUpload, 
+  FaFileAlt, FaCalendarAlt, FaDownload, FaEye, FaUpload, FaTrash, 
   FaCheckCircle, FaTimesCircle, FaClock, FaUsers, FaLock,
-  FaCog, FaSync
+  FaCog, FaSync, FaUserTie
 } from 'react-icons/fa';
+import { getApiUrl } from '../config/apiConfig';
+import secureStorage from '../utils/secureStorage';
+import { sanitizeInput, validatePassword, validateRequired, validateFileSize, validateFileType } from '../utils/validation';
 import './ParticipantDashboard.css';
 
 // Stable, top-level Profile Management component to avoid remounts on each parent re-render
@@ -129,23 +132,362 @@ function ProfileManagementStable({
   );
 }
 
-const ParticipantDashboard = ({ user }) => {
-  // Guard clause for undefined user
-  if (!user) {
-    return (
-      <div className="participant-dashboard">
-        <div className="loading-message">
-          <p>Loading user data...</p>
-        </div>
-      </div>
-    );
+function PasswordChangeModal({
+  isOpen,
+  isLoading,
+  error,
+  success,
+  form,
+  onChange,
+  onClose,
+  onSubmit,
+}) {
+  if (!isOpen) {
+    return null;
   }
 
+  return (
+    <div className="modal-overlay">
+      <div className="modal-content password-modal">
+        <div className="modal-header">
+          <h4><FaLock /> Change Password</h4>
+          <button type="button" className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          {error && <div className="alert alert-error">{error}</div>}
+          {success && <div className="alert alert-success">{success}</div>}
+          <div className="form-grid">
+            <div className="form-group">
+              <label>Current Password</label>
+              <input
+                type="password"
+                value={form.currentPassword}
+                onChange={(event) => onChange('currentPassword', event.target.value)}
+                placeholder="Enter your current password"
+                autoComplete="current-password"
+              />
+            </div>
+            <div className="form-group">
+              <label>New Password</label>
+              <input
+                type="password"
+                value={form.newPassword}
+                onChange={(event) => onChange('newPassword', event.target.value)}
+                placeholder="Enter a new password"
+                autoComplete="new-password"
+              />
+            </div>
+            <div className="form-group">
+              <label>Confirm New Password</label>
+              <input
+                type="password"
+                value={form.confirmPassword}
+                onChange={(event) => onChange('confirmPassword', event.target.value)}
+                placeholder="Repeat the new password"
+                autoComplete="new-password"
+              />
+            </div>
+          </div>
+        </div>
+        <div className="modal-actions">
+          <button type="button" className="btn btn-secondary" onClick={onClose} disabled={isLoading}>
+            Cancel
+          </button>
+          <button type="button" className="btn btn-warning" onClick={onSubmit} disabled={isLoading}>
+            {isLoading ? 'Updating...' : 'Update Password'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AuthenticationModuleStable({ onOpenPasswordModal, authSuccess }) {
+  return (
+    <div className="candidate-module">
+      <div className="content-header">
+        <h1 className="content-title">Authentication & Security</h1>
+        <p className="content-subtitle">Manage your account security settings</p>
+      </div>
+      <div className="module-content">
+        {authSuccess && <div className="alert alert-success">{authSuccess}</div>}
+        <div className="auth-card">
+          <h4><FaLock /> Account Security</h4>
+          <div className="auth-settings">
+            <div className="auth-setting-item">
+              <div className="setting-label">
+                <strong>Two-Factor Authentication</strong>
+                <p>Add an extra layer of security to your account</p>
+              </div>
+              <div className="setting-toggle">
+                <button type="button" className="btn btn-secondary" onClick={onOpenPasswordModal}>Change Password</button>
+              </div>
+            </div>
+
+            <div className="auth-setting-item">
+              <div className="setting-label">
+                <strong>Password</strong>
+                <p>Keep your account protected with a strong password</p>
+              </div>
+              <div className="setting-toggle">
+                <button type="button" className="btn btn-secondary" onClick={onOpenPasswordModal}>Change Password</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="auth-actions">
+            <button type="button" className="btn btn-warning" onClick={onOpenPasswordModal}>Change Password</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CampaignToolsStable({
+  campaignMaterials,
+  campaignCandidateId,
+  campaignElectionId,
+  campaignLoading,
+  campaignError,
+  campaignSuccess,
+  campaignForm,
+  campaignElectionOptions,
+  selectedCampaignElection,
+  onElectionChange,
+  onMaterialTypeChange,
+  onTitleChange,
+  onDescriptionChange,
+  onFilePick,
+  onRefreshMaterials,
+  onUploadMaterial,
+  onPostAnnouncement,
+  onDeleteMaterial,
+  onDownloadMaterial,
+}) {
+  const [previewUrls, setPreviewUrls] = useState({});
+
+  useEffect(() => {
+    let cancelled = false;
+    const createdUrls = [];
+
+    const loadPreviews = async () => {
+      const imageMaterials = campaignMaterials.filter((material) => {
+        return typeof material?.mimeType === 'string' && material.mimeType.startsWith('image/') && material.id;
+      });
+
+      const nextPreviewUrls = {};
+
+      await Promise.all(imageMaterials.map(async (material) => {
+        try {
+          const token = secureStorage.getToken();
+          const response = await fetch(getApiUrl(`/api/campaign-materials/download/${material.id}`), {
+            headers: {
+              ...(token ? { Authorization: `Bearer ${token}` } : {})
+            }
+          });
+
+          if (!response.ok) {
+            return;
+          }
+
+          const blob = await response.blob();
+          const objectUrl = window.URL.createObjectURL(blob);
+          nextPreviewUrls[material.id] = objectUrl;
+          createdUrls.push(objectUrl);
+        } catch {
+          // Keep the textual card visible if preview generation fails.
+        }
+      }));
+
+      if (!cancelled) {
+        setPreviewUrls(nextPreviewUrls);
+      }
+    };
+
+    loadPreviews();
+
+    return () => {
+      cancelled = true;
+      createdUrls.forEach((url) => window.URL.revokeObjectURL(url));
+    };
+  }, [campaignMaterials]);
+
+  return (
+    <div className="candidate-module">
+      <div className="content-header">
+        <h1 className="content-title">Campaign Tools</h1>
+        <p className="content-subtitle">Manage campaign materials for the selected election</p>
+      </div>
+      <div className="module-content">
+        {campaignError && <div className="alert alert-error">{campaignError}</div>}
+        {campaignSuccess && <div className="alert alert-success">{campaignSuccess}</div>}
+
+        <div className="campaign-sections">
+          <div className="campaign-section">
+            <h4><FaVoteYea /> Election Context</h4>
+            <div className="form-grid">
+              <div className="form-group">
+                <label>Election</label>
+                <select
+                  value={campaignElectionId}
+                  onChange={(event) => onElectionChange(event.target.value)}
+                >
+                  {campaignElectionOptions.length === 0 && <option value="">No election available</option>}
+                  {campaignElectionOptions.map((election) => (
+                    <option key={election.id} value={election.id}>
+                      {election.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Candidate Record</label>
+                <input
+                  type="text"
+                  value={campaignCandidateId ? `Candidate #${campaignCandidateId}` : 'Not resolved yet'}
+                  readOnly
+                />
+              </div>
+            </div>
+            <div className="form-actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => onRefreshMaterials(campaignElectionId || selectedCampaignElection?.id)}
+                disabled={campaignLoading || !campaignElectionId}
+              >
+                <FaSync /> Refresh Materials
+              </button>
+            </div>
+          </div>
+
+          <div className="campaign-section">
+            <h4><FaUpload /> Upload Campaign Material</h4>
+            <div className="campaign-upload-form">
+              <div className="form-grid">
+                <div className="form-group">
+                  <label>Material Type</label>
+                  <select
+                    value={campaignForm.materialType}
+                    onChange={(event) => onMaterialTypeChange(event.target.value)}
+                  >
+                    <option value="POSTER">Poster</option>
+                    <option value="BROCHURE">Brochure</option>
+                    <option value="MANIFESTO">Manifesto</option>
+                    <option value="VOLUNTEER_FORM">Volunteer Form</option>
+                    <option value="SYMBOL">Symbol</option>
+                    <option value="OTHER">Other</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label>Title</label>
+                  <input
+                    type="text"
+                    value={campaignForm.title}
+                    onChange={(event) => onTitleChange(event.target.value)}
+                    placeholder="Enter a title"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Description</label>
+                  <textarea
+                    rows="4"
+                    value={campaignForm.description}
+                    onChange={(event) => onDescriptionChange(event.target.value)}
+                    placeholder="Optional details for the material"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>File</label>
+                  <input type="file" onChange={onFilePick} />
+                </div>
+              </div>
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={onUploadMaterial}
+                  disabled={campaignLoading || !campaignElectionId}
+                >
+                  {campaignLoading ? 'Uploading...' : 'Upload Material'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={onPostAnnouncement}
+                  disabled={campaignLoading || !campaignElectionId}
+                >
+                  Post Announcement
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="campaign-section">
+            <h4><FaClipboardList /> Published Materials</h4>
+            <p className="campaign-summary">
+              Showing submissions for {selectedCampaignElection?.title || 'the selected election'}.
+            </p>
+            {campaignLoading && campaignMaterials.length === 0 ? (
+              <p>Loading campaign materials...</p>
+            ) : campaignMaterials.length === 0 ? (
+              <p>No campaign materials uploaded yet.</p>
+            ) : (
+              <div className="materials-grid">
+                {campaignMaterials.map((material) => (
+                  <div key={material.id} className="material-card">
+                    <div className="material-preview">
+                      {previewUrls[material.id] ? (
+                        <img
+                          src={previewUrls[material.id]}
+                          alt={material.title || material.materialType}
+                          className="material-preview-image"
+                        />
+                      ) : (
+                        <div className="material-preview-placeholder">
+                          <FaImage />
+                          <span>{material.materialType || 'Material'}</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="material-card-header">
+                      <h5>{material.title}</h5>
+                      <span className={`status ${(material.isApproved ? 'approved' : 'pending')}`}>
+                        {material.isApproved ? 'Approved' : 'Pending approval'}
+                      </span>
+                    </div>
+                    <p><strong>Type:</strong> {material.materialType}</p>
+                    <p><strong>Uploaded:</strong> {material.uploadDate ? new Date(material.uploadDate).toLocaleString() : 'Unknown'}</p>
+                    {material.fileName && <p><strong>File:</strong> {material.fileName}</p>}
+                    {material.description && <p>{material.description}</p>}
+                    {material.rejectionReason && <p><strong>Rejection:</strong> {material.rejectionReason}</p>}
+                    <div className="result-actions">
+                      <button type="button" className="btn btn-info" onClick={() => onDownloadMaterial(material)}>
+                        <FaDownload /> Download
+                      </button>
+                      <button type="button" className="btn btn-secondary" onClick={() => onDeleteMaterial(material.id)}>
+                        <FaTrash /> Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const ParticipantDashboard = ({ user }) => {
   const [activeTab, setActiveTab] = useState('home');
-  const [loading, setLoading] = useState(false);
+  const [loading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [allElections, setAllElections] = useState([]);
   const [enrollmentStatus, setEnrollmentStatus] = useState({});
+  const [candidateApplications, setCandidateApplications] = useState([]);
   
   // Profile management state
   const [profile, setProfile] = useState({
@@ -165,10 +507,42 @@ const ParticipantDashboard = ({ user }) => {
   const [profileSuccess, setProfileSuccess] = useState('');
   
   // Image handling states
-  const [profileImage, setProfileImage] = useState(null);
+  const [, setProfileImage] = useState(null);
   const [profileImagePreview, setProfileImagePreview] = useState('');
-  const [partySymbol, setPartySymbol] = useState(null);
-  const [partySymbolPreview, setPartySymbolPreview] = useState('');
+  const [, setPartySymbol] = useState(null);
+  const [, setPartySymbolPreview] = useState('');
+
+  // Campaign tools state
+  const [campaignMaterials, setCampaignMaterials] = useState([]);
+  const [campaignCandidateId, setCampaignCandidateId] = useState(null);
+  const [campaignElectionId, setCampaignElectionId] = useState('');
+  const [campaignLoading, setCampaignLoading] = useState(false);
+  const [campaignError, setCampaignError] = useState('');
+  const [campaignSuccess, setCampaignSuccess] = useState('');
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
+  const [passwordSuccess, setPasswordSuccess] = useState('');
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: ''
+  });
+  const [campaignForm, setCampaignForm] = useState({
+    materialType: 'POSTER',
+    title: '',
+    description: '',
+    file: null
+  });
+
+  const getAuthHeaders = useCallback((extraHeaders = {}) => {
+    const token = secureStorage.getToken();
+    return {
+      'Content-Type': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      ...extraHeaders
+    };
+  }, []);
 
   // Navigation tabs for candidate modules
   const tabs = [
@@ -183,15 +557,18 @@ const ParticipantDashboard = ({ user }) => {
 
   // Helper function to check election status based on current time and admin status
   const getElectionStatus = (election) => {
-    // Handle admin-created elections with status field
     if (election.status) {
       switch (election.status.toUpperCase()) {
+        case 'ACTIVE':
         case 'ONGOING':
           return 'Active';
         case 'SCHEDULED':
           return 'Upcoming';
         case 'COMPLETED':
+        case 'RESULTS_PUBLISHED':
           return 'Completed';
+        case 'DRAFT':
+          return 'Draft';
         default:
           return election.status;
       }
@@ -209,312 +586,235 @@ const ParticipantDashboard = ({ user }) => {
 
   // Define fetchElectionsFromBackend function with useCallback to prevent unnecessary re-renders
   const fetchElectionsFromBackend = useCallback(async () => {
-    if (isRefreshing) return false; // Prevent multiple simultaneous calls
+    if (isRefreshing) return null; // Prevent multiple simultaneous calls
     
     try {
       setIsRefreshing(true);
-      console.log('ParticipantDashboard: Fetching elections from admin database...');
-      const response = await fetch('http://localhost:8081/api/admin/elections', {
+      console.log('ParticipantDashboard: Fetching elections from participant endpoint...');
+      const response = await fetch(getApiUrl('/api/participant/elections'), {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
+        headers: getAuthHeaders({
           'Cache-Control': 'no-cache'
-        }
+        })
       });
       
       if (response.ok) {
         const backendElections = await response.json();
-        console.log('ParticipantDashboard: Successfully fetched elections from admin database:', backendElections.length);
+        console.log('ParticipantDashboard: Successfully fetched elections from participant endpoint:', backendElections.length);
         
         const electionsWithParticipants = backendElections.map(election => ({
           ...election,
           participants: election.participants || [],
+          participantUserIds: election.participantUserIds || [],
           enrollmentRequests: election.enrollmentRequests || []
         }));
         
         setAllElections(electionsWithParticipants);
-        // Clear any old localStorage data and use only admin database data
-        localStorage.removeItem('participant_elections');
-        localStorage.setItem('voterow_elections', JSON.stringify(electionsWithParticipants));
-        return true;
+        return electionsWithParticipants;
       } else {
-        console.error('ParticipantDashboard: Failed to fetch from admin database, status:', response.status);
-        // Only use admin database elections from localStorage, ignore any other sources
-        const electionsFromStorage = JSON.parse(localStorage.getItem('voterow_elections')) || [];
-        console.log('ParticipantDashboard: Using admin elections from localStorage:', electionsFromStorage.length);
-        setAllElections(electionsFromStorage.map(election => ({
-          ...election,
-          enrollmentRequests: election.enrollmentRequests || []
-        })));
-        return false;
+        console.error('ParticipantDashboard: Failed to fetch from participant endpoint, status:', response.status);
+        setAllElections([]);
+        return [];
       }
     } catch (error) {
-      console.error('ParticipantDashboard: Error connecting to admin database:', error);
-      // Only use admin database elections from localStorage, ignore any other sources
-      const electionsFromStorage = JSON.parse(localStorage.getItem('voterow_elections')) || [];
-      console.log('ParticipantDashboard: Using admin elections from localStorage after error:', electionsFromStorage.length);
-      setAllElections(electionsFromStorage.map(election => ({
-        ...election,
-        enrollmentRequests: election.enrollmentRequests || []
-      })));
-      return false;
+      console.error('ParticipantDashboard: Error connecting to participant endpoint:', error);
+      setAllElections([]);
+      return [];
     } finally {
       setIsRefreshing(false);
     }
-  }, [isRefreshing]);
+  }, [getAuthHeaders, isRefreshing]);
 
-  // Load elections on component mount with reduced refresh frequency
+  // Load elections on component mount - backend only
   useEffect(() => {
-    // Clear any old localStorage keys that might conflict
-    localStorage.removeItem('participant_elections');
-    localStorage.removeItem('candidate_elections');
-    
-    // Load elections immediately
     fetchElectionsFromBackend();
-    
-    // Refresh elections every 5 minutes instead of 30 seconds to reduce auto-refresh
-    const interval = setInterval(fetchElectionsFromBackend, 300000);
-    
-    return () => clearInterval(interval);
-  }, [fetchElectionsFromBackend]);
+  }, [user]);
   
-  // Setup enrollment status for the current user
-  useEffect(() => {
-    if (allElections.length > 0 && user) {
-      const status = {};
-      
-      allElections.forEach(election => {
-        // Check if user is already a participant (approved)
-        if (election.participants && election.participants.includes(user.id)) {
-          status[election.id] = { status: 'APPROVED', message: 'Your application has been approved' };
-        }
-        // Check if user has a pending enrollment request
-        else if (election.enrollmentRequests) {
-          const request = election.enrollmentRequests.find(req => req.userId === user.id);
-          if (request) {
-            status[election.id] = { 
-              status: request.status, 
-              message: request.status === 'PENDING' ? 
-                'Your application is pending approval' : 
-                request.status === 'REJECTED' ? 
-                'Your application was rejected' : 
-                'Application status: ' + request.status
-            };
-          }
-        }
-      });
-      
-      setEnrollmentStatus(status);
-    }
-  }, [allElections, user]);
-
   const handleEnroll = async (electionId) => {
     try {
-      // Update enrollment status for UI feedback first
-      setEnrollmentStatus(prev => ({
-        ...prev,
-        [electionId]: { status: 'PENDING', message: 'Application submitted, waiting for approval' }
-      }));
-      
-      // Create candidate application data
+      // Create candidate application data for the proper endpoint
       const candidateApplication = {
-        id: Date.now(), // Simple ID generation
-        name: user.fullName,
-        email: user.email,
-        phone: user.phoneNumber || '',
-        party: profile.partyName || 'Independent',
-        electionId: electionId,
-        status: 'PENDING',
-        appliedDate: new Date().toISOString(),
         userId: user.id,
-        biography: profile.biography || '',
-        partySymbol: profile.partySymbol || ''
+        electionId: electionId,
+        party: profile.partyName || 'Independent'
       };
       
-      // PRIMARY: Submit candidate application to backend database
-      let apiSuccess = false;
-      
-      try {
-        console.log('ParticipantDashboard: Submitting candidate application to database:', candidateApplication);
-        const response = await fetch(`http://localhost:8081/api/admin/candidates`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-cache, no-store',
-            'Pragma': 'no-cache'
-          },
-          credentials: 'include',
-          mode: 'cors',
-          body: JSON.stringify(candidateApplication),
-        });
-        
-        if (response.ok) {
-          const result = await response.json();
-          console.log('ParticipantDashboard: Successfully submitted candidate application to database:', result);
-          apiSuccess = true;
-        } else {
-          console.error('ParticipantDashboard: Backend response not OK:', response.status, response.statusText);
-        }
-      } catch (error) {
-        console.error('ParticipantDashboard: Backend candidate application failed:', error);
-      }
-
-      // FALLBACK ONLY: Use localStorage if database is unavailable
-      if (!apiSuccess) {
-        console.log('ParticipantDashboard: Database unavailable, falling back to localStorage');
-        
-        const existingCandidates = JSON.parse(localStorage.getItem('voterow_candidates')) || [];
-        
-        // Check if candidate already applied for this election
-        const existingApplication = existingCandidates.find(c => 
-          c.userId === user.id && c.electionId === electionId
-        );
-        
-        if (!existingApplication) {
-          const updatedCandidates = [...existingCandidates, candidateApplication];
-          localStorage.setItem('voterow_candidates', JSON.stringify(updatedCandidates));
-          console.log('ParticipantDashboard: Candidate application stored in localStorage as fallback');
-        } else {
-          console.log('ParticipantDashboard: Candidate already applied for this election');
-        }
-      }
-      
-      // Also add to election enrollment requests for backward compatibility
-      const updatedElections = allElections.map(election => {
-        if (election.id === electionId) {
-          const enrollmentRequests = election.enrollmentRequests || [];
-          const newRequest = {
-            participantId: user.id,
-            userId: user.id,
-            status: 'PENDING',
-            requestDate: new Date().toISOString(),
-            email: user.email,
-            fullName: user.fullName
-          };
-          
-          return { 
-            ...election, 
-            enrollmentRequests: [...enrollmentRequests, newRequest]
-          };
-        }
-        return election;
+      // Submit candidate application to participant endpoint
+      console.log('ParticipantDashboard: Submitting candidate application:', candidateApplication);
+      const response = await fetch(getApiUrl('/api/participant/candidate-application'), {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(candidateApplication),
       });
-
-      setAllElections(updatedElections);
-      localStorage.setItem('voterow_elections', JSON.stringify(updatedElections));
       
-      alert('Your application has been submitted and is pending approval by an administrator.');
+      console.log('Response status:', response.status);
+      console.log('Response headers:', response.headers);
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('ParticipantDashboard: Successfully submitted candidate application:', result);
+        
+        // Update enrollment status to reflect successful submission
+        setEnrollmentStatus(prev => ({
+          ...prev,
+          [electionId]: { status: 'PENDING', message: 'Application submitted successfully, awaiting admin approval' }
+        }));
+        
+        alert('Your application has been submitted and is pending approval by an administrator.');
+        
+        // Refresh both elections and application status so admin approvals reflect immediately
+        const latestElections = await fetchElectionsFromBackend();
+        await checkCandidateApplicationStatus(latestElections || allElections);
+      } else {
+        const errorText = await response.text();
+        console.error('ParticipantDashboard: Raw error response:', errorText);
+        
+        let errorMessage = 'Failed to submit application';
+        
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.error || errorData.message || errorMessage;
+        } catch {
+          errorMessage = errorText || errorMessage;
+        }
+        
+        console.error('ParticipantDashboard: Parsed error message:', errorMessage);
+        throw new Error(errorMessage);
+      }
+      
     } catch (error) {
       console.error('Error submitting enrollment:', error);
-      alert('There was an error submitting your application. Please try again.');
+      alert(error.message || 'There was an error submitting your application. Please try again.');
       
       // Reset status on error
       setEnrollmentStatus(prev => ({
         ...prev,
-        [electionId]: { status: 'ERROR', message: 'Application failed, please try again' }
+        [electionId]: { status: 'ERROR', message: error.message || 'Application failed, please try again' }
       }));
     }
   };
 
   // Function to check candidate application status from database
-  const checkCandidateApplicationStatus = useCallback(async () => {
-    if (!user || !allElections) return;
+  const checkCandidateApplicationStatus = useCallback(async (electionsOverride = allElections) => {
+    if (!user) return;
     
     try {
       console.log('Fetching candidate applications from database for user:', user.id);
+      const electionsToUse = Array.isArray(electionsOverride) ? electionsOverride : [];
       
-      // Fetch candidates from database instead of localStorage
-      const response = await fetch('http://localhost:8081/api/admin/candidates');
+      // Fetch candidate applications from participant endpoint
+      const response = await fetch(
+        getApiUrl(`/api/participant/candidate-applications?userId=${user.id}`),
+        {
+          headers: getAuthHeaders({
+            'Cache-Control': 'no-cache'
+          })
+        }
+      );
       if (!response.ok) {
-        throw new Error('Failed to fetch candidates from database');
+        throw new Error('Failed to fetch candidate applications from database');
       }
       
-      const candidates = await response.json();
-      console.log('Fetched candidates from database:', candidates);
+      const applications = await response.json();
+      console.log('Fetched candidate applications from database:', applications);
       
       const status = {};
+      const applicationsByElection = new Map();
       
-      allElections.forEach(election => {
-        console.log(`Checking election ${election.id} for user ${user.id}`);
-        
-        // Check if current user has applied as candidate for this election
-        const candidateApplication = candidates.find(c => {
-          console.log(`Comparing candidate userId ${c.userId} with current user ${user.id}, electionId ${c.electionId} with ${election.id}`);
-          return c.userId === user.id && c.electionId === election.id;
-        });
-        
-        if (candidateApplication) {
-          const applicationStatus = candidateApplication.status.toUpperCase();
-          status[election.id] = {
+      applications.forEach(application => {
+        const applicationStatus = application.status ? application.status.toUpperCase() : 'PENDING';
+        if (application.electionId != null) {
+          status[application.electionId] = {
             status: applicationStatus,
             message: applicationStatus === 'PENDING' ? 
-              'Your candidate application is pending approval by admin' :
+              'Your application is pending approval by admin' :
               applicationStatus === 'APPROVED' ?
-              'Your candidate application has been approved! You can now participate in elections.' :
+              'Your application has been approved. You can continue in the campaign portal.' :
               applicationStatus === 'REJECTED' ?
-              'Your candidate application was rejected' :
-              `Application status: ${candidateApplication.status}`
+              'Your application was rejected' :
+              `Application status: ${application.status || 'PENDING'}`,
+            submittedAt: application.submittedAt || ''
           };
-          
-          console.log(`✅ Found application - Election ${election.id}: User ${user.id} application status is ${applicationStatus}`);
+          applicationsByElection.set(application.electionId, {
+            ...application,
+            status: applicationStatus,
+            electionTitle:
+              application.electionTitle ||
+              electionsToUse.find(election => election.id === application.electionId)?.title ||
+              'Unknown Election'
+          });
         } else {
-          console.log(`❌ No application found for user ${user.id} in election ${election.id}`);
+          applicationsByElection.set(`application-${application.id}`, {
+            ...application,
+            status: applicationStatus
+          });
         }
+        
+        console.log(`✅ Found application: User ${user.email} application status is ${applicationStatus}`);
       });
       
-      // Update enrollment status with candidate application status
-      setEnrollmentStatus(prevStatus => ({
-        ...prevStatus,
-        ...status
-      }));
+      electionsToUse.forEach(election => {
+        const participantUserIds = Array.isArray(election.participantUserIds) ? election.participantUserIds : [];
+        if (!participantUserIds.includes(user.id)) {
+          return;
+        }
+
+        status[election.id] = {
+          status: 'APPROVED',
+          message: 'Your application has been approved. You can continue in the campaign portal.',
+          submittedAt: status[election.id]?.submittedAt || election.createdAt || ''
+        };
+
+        const existingApplication = applicationsByElection.get(election.id);
+        applicationsByElection.set(election.id, {
+          id: existingApplication?.id || `approved-${election.id}`,
+          userId: existingApplication?.userId || user.id,
+          electionId: election.id,
+          electionTitle: existingApplication?.electionTitle || election.title,
+          partyName: existingApplication?.partyName || profile.partyName || 'Independent',
+          status: 'APPROVED',
+          submittedAt: existingApplication?.submittedAt || election.createdAt || ''
+        });
+      });
+
+      const mergedApplications = Array.from(applicationsByElection.values()).sort((first, second) => {
+        const firstDate = first.submittedAt ? new Date(first.submittedAt).getTime() : 0;
+        const secondDate = second.submittedAt ? new Date(second.submittedAt).getTime() : 0;
+        return secondDate - firstDate;
+      });
+
+      setCandidateApplications(mergedApplications);
+      setEnrollmentStatus(status);
       
     } catch (error) {
       console.error('Error fetching candidate applications from database:', error);
       
-      // Fallback: try localStorage if database fails
-      console.log('Falling back to localStorage for candidate applications');
-      const candidates = JSON.parse(localStorage.getItem('voterow_candidates')) || [];
-      const status = {};
-      
-      allElections.forEach(election => {
-        const candidateApplication = candidates.find(c => 
-          c.userId === user.id && c.electionId === election.id
-        );
-        
-        if (candidateApplication) {
-          status[election.id] = {
-            status: candidateApplication.status.toUpperCase(),
-            message: candidateApplication.status === 'PENDING' ? 
-              'Your candidate application is pending approval by admin' :
-              candidateApplication.status === 'Approved' ?
-              'Your candidate application has been approved!' :
-              candidateApplication.status === 'Rejected' ?
-              'Your candidate application was rejected' :
-              `Application status: ${candidateApplication.status}`
-          };
-        }
-      });
-      
-      setEnrollmentStatus(prevStatus => ({
-        ...prevStatus,
-        ...status
-      }));
+      // If database fails, clear enrollment status
+      setCandidateApplications([]);
+      setEnrollmentStatus({});
     }
-  }, [allElections, user]);
+  }, [allElections, getAuthHeaders, profile.partyName, user]);
 
   // Check candidate application status when elections or user changes
   useEffect(() => {
-    const loadCandidateStatus = async () => {
-      await checkCandidateApplicationStatus();
-    };
-    
-    loadCandidateStatus();
-    
-    // Refresh candidate status every 2 minutes instead of 5 seconds to prevent auto-refresh
-    const interval = setInterval(loadCandidateStatus, 120000);
-    
+    if (allElections.length > 0 && user) {
+      checkCandidateApplicationStatus(allElections);
+    }
+  }, [allElections, user, checkCandidateApplicationStatus]); // Check when elections or user changes
+
+  useEffect(() => {
+    if (activeTab !== 'elections' || !user) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      fetchElectionsFromBackend().then((latestElections) => {
+        checkCandidateApplicationStatus(latestElections || allElections);
+      });
+    }, 5000);
+
     return () => clearInterval(interval);
-  }, [checkCandidateApplicationStatus]);
+  }, [activeTab, allElections, checkCandidateApplicationStatus, fetchElectionsFromBackend, user]);
 
   // Profile management functions
   useEffect(() => {
@@ -553,6 +853,56 @@ const ParticipantDashboard = ({ user }) => {
     reader.readAsDataURL(file);
   }, []);
 
+  const handlePasswordFieldChange = useCallback((field, value) => {
+    setPasswordForm(prev => ({ ...prev, [field]: value }));
+  }, []);
+
+  const handleChangePassword = async () => {
+    setPasswordError('');
+    setPasswordSuccess('');
+
+    if (!passwordForm.currentPassword.trim()) {
+      setPasswordError('Current password is required');
+      return;
+    }
+
+    if (!validatePassword(passwordForm.newPassword)) {
+      setPasswordError('New password must be at least 8 characters long');
+      return;
+    }
+
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      setPasswordError('New password and confirmation do not match');
+      return;
+    }
+
+    try {
+      setPasswordLoading(true);
+      const response = await fetch(getApiUrl('/api/auth/change-password'), {
+        method: 'PUT',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(passwordForm)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Failed to update password');
+      }
+
+      setPasswordSuccess('Password updated successfully');
+      setShowPasswordModal(false);
+      setPasswordForm({
+        currentPassword: '',
+        newPassword: '',
+        confirmPassword: ''
+      });
+    } catch (error) {
+      setPasswordError(error.message || 'Failed to update password');
+    } finally {
+      setPasswordLoading(false);
+    }
+  };
+
   const saveProfile = async () => {
     if (!profile.fullName.trim()) {
       setProfileError('Full name is required');
@@ -564,27 +914,20 @@ const ParticipantDashboard = ({ user }) => {
     setProfileSuccess('');
 
     try {
-      // Create a FormData object to handle file uploads
-      const formData = new FormData();
-      formData.append('fullName', profile.fullName);
-      formData.append('email', profile.email);
-      formData.append('age', profile.age);
-      formData.append('phoneNumber', profile.phoneNumber);
-      formData.append('idProofNumber', profile.idProofNumber);
-      formData.append('address', profile.address);
-      
-      if (profileImage) {
-        formData.append('profileImage', profileImage);
-      }
-      
-      if (partySymbol) {
-        formData.append('partySymbol', partySymbol);
-      }
+      // Create profile update request
+      const updateRequest = {
+        fullName: profile.fullName,
+        age: profile.age ? parseInt(profile.age) : null,
+        phoneNumber: profile.phoneNumber,
+        idProofNumber: profile.idProofNumber,
+        address: profile.address
+      };
 
-      // Attempt to update profile via API
-      const response = await fetch(`http://localhost:8081/api/users/${user.id}/profile`, {
+      // Update profile via correct API endpoint
+      const response = await fetch(getApiUrl('/api/auth/profile'), {
         method: 'PUT',
-        body: formData
+        headers: getAuthHeaders(),
+        body: JSON.stringify(updateRequest)
       });
 
       if (response.ok) {
@@ -602,22 +945,294 @@ const ParticipantDashboard = ({ user }) => {
         setIsProfileEditing(false);
         
         // Update parent component user data if possible
-        if (window.updateUserProfile) {
-          window.updateUserProfile(updatedUser);
+        if (window.__voterowUpdateUser) {
+          window.__voterowUpdateUser(updatedUser);
         }
       } else {
         const errorText = await response.text();
         setProfileError(errorText || 'Failed to update profile');
       }
-    } catch (err) {
+    } catch {
       setProfileError('Network error. Please try again.');
     } finally {
       setProfileLoading(false);
     }
   };
+
+  const campaignElectionOptions = Array.from(
+    new Map(
+      [...candidateApplications, ...allElections]
+        .map((item) => {
+          const electionId = item?.electionId ?? item?.id;
+          if (electionId == null) {
+            return null;
+          }
+
+          return [Number(electionId), {
+            id: Number(electionId),
+            title: item?.electionTitle || item?.title || `Election ${electionId}`,
+            status: item?.status || item?.electionStatus || item?.applicationStatus || 'UNKNOWN'
+          }];
+        })
+        .filter(Boolean)
+    ).values()
+  );
+
+  const selectedCampaignElection = campaignElectionOptions.find(
+    (election) => election.id === Number(campaignElectionId)
+  ) || campaignElectionOptions[0] || null;
+
+  useEffect(() => {
+    if (!campaignElectionId && campaignElectionOptions.length > 0) {
+      setCampaignElectionId(String(campaignElectionOptions[0].id));
+    }
+  }, [campaignElectionId, campaignElectionOptions]);
+
+  const loadCampaignMaterials = useCallback(async (electionId) => {
+    if (!user?.id || !electionId) {
+      setCampaignCandidateId(null);
+      setCampaignMaterials([]);
+      return;
+    }
+
+    setCampaignLoading(true);
+    setCampaignError('');
+
+    try {
+      const token = secureStorage.getToken();
+      const candidateResponse = await fetch(
+        getApiUrl(`/api/participant/candidate-id?userId=${user.id}&electionId=${electionId}`),
+        {
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            'Cache-Control': 'no-cache'
+          }
+        }
+      );
+
+      if (!candidateResponse.ok) {
+        if (candidateResponse.status === 404) {
+          setCampaignCandidateId(null);
+          setCampaignMaterials([]);
+          setCampaignError('No candidate record was found for the selected election yet.');
+          return;
+        }
+        throw new Error('Failed to resolve campaign candidate');
+      }
+
+      const candidateId = await candidateResponse.json();
+      setCampaignCandidateId(candidateId);
+
+      const materialsResponse = await fetch(
+        getApiUrl(`/api/campaign-materials/candidate/${candidateId}`),
+        {
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            'Cache-Control': 'no-cache'
+          }
+        }
+      );
+
+      if (!materialsResponse.ok) {
+        throw new Error('Failed to load campaign materials');
+      }
+
+      const materials = await materialsResponse.json();
+      setCampaignMaterials(Array.isArray(materials) ? materials : []);
+    } catch (error) {
+      setCampaignMaterials([]);
+      setCampaignError(error.message || 'Failed to load campaign materials');
+    } finally {
+      setCampaignLoading(false);
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (activeTab === 'campaign') {
+      loadCampaignMaterials(campaignElectionId || selectedCampaignElection?.id);
+    }
+  }, [activeTab, campaignElectionId, loadCampaignMaterials, selectedCampaignElection?.id]);
+
+  const submitCampaignMaterial = useCallback(async ({ type, title, description, file }) => {
+    if (!user?.id) {
+      throw new Error('User session is missing');
+    }
+
+    const electionId = campaignElectionId || selectedCampaignElection?.id;
+    if (!electionId) {
+      throw new Error('Select an election before uploading campaign materials');
+    }
+
+    if (!campaignCandidateId) {
+      throw new Error('Candidate record not resolved for the selected election');
+    }
+
+    const uploadFile = file || new File(
+      [description || title || 'Campaign material'],
+      `${(title || type || 'campaign-material').replace(/\s+/g, '-').toLowerCase()}.txt`,
+      { type: 'text/plain' }
+    );
+
+    const formData = new FormData();
+    formData.append('file', uploadFile);
+    formData.append('candidateId', String(campaignCandidateId));
+    formData.append('electionId', String(electionId));
+    formData.append('materialType', type);
+    formData.append('title', title);
+    if (description) {
+      formData.append('description', description);
+    }
+
+    const token = secureStorage.getToken();
+    const response = await fetch(getApiUrl('/api/campaign-materials/upload'), {
+      method: 'POST',
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: formData,
+    });
+
+    const responseText = await response.text();
+    let responseBody = {};
+    try {
+      responseBody = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      responseBody = { message: responseText };
+    }
+
+    if (!response.ok) {
+      throw new Error(responseBody.error || responseBody.message || 'Failed to upload campaign material');
+    }
+
+    await loadCampaignMaterials(electionId);
+    return responseBody;
+  }, [campaignCandidateId, campaignElectionId, loadCampaignMaterials, selectedCampaignElection?.id, user?.id]);
+
+  const handleCampaignFilePick = (event) => {
+    const file = event.target.files?.[0] || null;
+    setCampaignForm(prev => ({ ...prev, file }));
+  };
+
+  const handleCampaignUpload = async () => {
+    setCampaignError('');
+    setCampaignSuccess('');
+
+    if (!campaignForm.title.trim()) {
+      setCampaignError('Campaign material title is required');
+      return;
+    }
+
+    try {
+      setCampaignLoading(true);
+      await submitCampaignMaterial({
+        type: campaignForm.materialType,
+        title: campaignForm.title.trim(),
+        description: campaignForm.description.trim(),
+        file: campaignForm.file
+      });
+      setCampaignSuccess('Campaign material uploaded successfully');
+      setCampaignForm({
+        materialType: 'POSTER',
+        title: '',
+        description: '',
+        file: null
+      });
+    } catch (error) {
+      setCampaignError(error.message || 'Failed to upload campaign material');
+    } finally {
+      setCampaignLoading(false);
+    }
+  };
+
+  const handleCampaignAnnouncement = async () => {
+    setCampaignError('');
+    setCampaignSuccess('');
+
+    if (!campaignForm.title.trim() && !campaignForm.description.trim()) {
+      setCampaignError('Enter an announcement title or message');
+      return;
+    }
+
+    try {
+      setCampaignLoading(true);
+      await submitCampaignMaterial({
+        type: 'ANNOUNCEMENT',
+        title: campaignForm.title.trim() || 'Announcement',
+        description: campaignForm.description.trim() || campaignForm.title.trim(),
+      });
+      setCampaignSuccess('Announcement published successfully');
+      setCampaignForm({
+        materialType: 'POSTER',
+        title: '',
+        description: '',
+        file: null
+      });
+    } catch (error) {
+      setCampaignError(error.message || 'Failed to publish announcement');
+    } finally {
+      setCampaignLoading(false);
+    }
+  };
+
+  const handleCampaignDelete = async (materialId) => {
+    const confirmed = window.confirm('Delete this campaign material?');
+    if (!confirmed) {
+      return;
+    }
+
+    setCampaignError('');
+    setCampaignSuccess('');
+
+    try {
+      const token = secureStorage.getToken();
+      const response = await fetch(getApiUrl(`/api/campaign-materials/${materialId}`), {
+        method: 'DELETE',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        }
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Failed to delete campaign material');
+      }
+
+      await loadCampaignMaterials(campaignElectionId || selectedCampaignElection?.id);
+      setCampaignSuccess('Campaign material deleted successfully');
+    } catch (error) {
+      setCampaignError(error.message || 'Failed to delete campaign material');
+    }
+  };
+
+  const handleCampaignDownload = async (material) => {
+    try {
+      const token = secureStorage.getToken();
+      const response = await fetch(getApiUrl(`/api/campaign-materials/download/${material.id}`), {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to download campaign material');
+      }
+
+      const blob = await response.blob();
+      const objectUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = material.fileName || `${material.title || 'campaign-material'}.bin`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      setCampaignError(error.message || 'Failed to download campaign material');
+    }
+  };
   
   // Filter for elections this user is part of and upcoming ones they can join
-  const enrolledElections = allElections.filter(e => e.participants && e.participants.includes(user.id));
+  const enrolledElections = allElections.filter(e => enrollmentStatus[e.id]?.status === 'APPROVED');
   const upcomingElections = allElections.filter(e => getElectionStatus(e) === 'Upcoming');
 
   // Home Module Component
@@ -767,9 +1382,9 @@ const ParticipantDashboard = ({ user }) => {
         <div className="header-actions">
           <button 
             className="btn btn-secondary" 
-            onClick={() => {
-              fetchElectionsFromBackend();
-              checkCandidateApplicationStatus();
+            onClick={async () => {
+              const latestElections = await fetchElectionsFromBackend();
+              await checkCandidateApplicationStatus(latestElections || allElections);
             }}
             disabled={isRefreshing}
             title="Refresh elections and application status"
@@ -783,6 +1398,7 @@ const ParticipantDashboard = ({ user }) => {
         <div className="election-sections">
           <div className="election-section">
             <h4><FaVoteYea /> Available Elections</h4>
+
             <div className="elections-grid">
               {allElections && allElections.length > 0 ? (
                   allElections.map(election => {
@@ -850,17 +1466,21 @@ const ParticipantDashboard = ({ user }) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {enrolledElections.map(election => (
-                    <tr key={election.id}>
-                      <td>{election.title}</td>
-                      <td>{new Date().toLocaleDateString()}</td>
-                      <td><span className="status approved">Approved</span></td>
+                  {candidateApplications.map(application => (
+                    <tr key={application.id}>
+                      <td>{application.electionTitle || 'Unknown Election'}</td>
+                      <td>{application.submittedAt ? new Date(application.submittedAt).toLocaleDateString() : 'N/A'}</td>
                       <td>
-                        <button className="btn btn-sm btn-info">View Details</button>
+                        <span className={`status ${(application.status || 'PENDING').toLowerCase()}`}>
+                          {application.status || 'PENDING'}
+                        </span>
+                      </td>
+                      <td>
+                        <button className="btn btn-sm btn-info" type="button">View Details</button>
                       </td>
                     </tr>
                   ))}
-                  {enrolledElections.length === 0 && (
+                  {candidateApplications.length === 0 && (
                     <tr>
                       <td colSpan="4" style={{ textAlign: 'center' }}>No applications yet</td>
                     </tr>
@@ -902,80 +1522,142 @@ const ParticipantDashboard = ({ user }) => {
     <div className="candidate-module">
       <div className="content-header">
         <h1 className="content-title">Campaign Tools</h1>
-        <p className="content-subtitle">Manage your campaign materials and communications</p>
+        <p className="content-subtitle">Manage campaign materials against the live backend</p>
       </div>
       <div className="module-content">
+        {campaignError && <div className="alert alert-error">{campaignError}</div>}
+        {campaignSuccess && <div className="alert alert-success">{campaignSuccess}</div>}
+
         <div className="campaign-sections">
           <div className="campaign-section">
-            <h4><FaFileAlt /> Manifesto</h4>
-            <div className="manifesto-upload">
-              <div className="upload-area large">
-                <FaUpload />
-                <h5>Upload Your Manifesto</h5>
-                <p>Share your vision and promises with voters</p>
-                <input type="file" accept=".pdf,.doc,.docx" />
-                <button className="btn btn-primary">Upload Manifesto</button>
+            <h4><FaVoteYea /> Election Context</h4>
+            <div className="form-grid">
+              <div className="form-group">
+                <label>Election</label>
+                <select
+                  value={campaignElectionId}
+                  onChange={(event) => setCampaignElectionId(event.target.value)}
+                >
+                  {campaignElectionOptions.length === 0 && <option value="">No election available</option>}
+                  {campaignElectionOptions.map((election) => (
+                    <option key={election.id} value={election.id}>
+                      {election.title}
+                    </option>
+                  ))}
+                </select>
               </div>
-              <div className="manifesto-preview">
-                <h6>Current Manifesto</h6>
-                <p>manifesto_2024.pdf</p>
-                <div className="manifesto-actions">
-                  <button className="btn btn-secondary">Preview</button>
-                  <button className="btn btn-info">Download</button>
-                  <button className="btn btn-warning">Replace</button>
+              <div className="form-group">
+                <label>Candidate Record</label>
+                <input
+                  type="text"
+                  value={campaignCandidateId ? `Candidate #${campaignCandidateId}` : 'Not resolved yet'}
+                  readOnly
+                />
+              </div>
+            </div>
+            <div className="form-actions">
+              <button
+                className="btn btn-secondary"
+                onClick={() => loadCampaignMaterials(campaignElectionId || selectedCampaignElection?.id)}
+                disabled={campaignLoading || !campaignElectionId}
+              >
+                <FaSync /> Refresh Materials
+              </button>
+            </div>
+          </div>
+
+          <div className="campaign-section">
+            <h4><FaUpload /> Upload Campaign Material</h4>
+            <div className="campaign-upload-form">
+              <div className="form-grid">
+                <div className="form-group">
+                  <label>Material Type</label>
+                  <select
+                    value={campaignForm.materialType}
+                    onChange={(event) => setCampaignForm(prev => ({ ...prev, materialType: event.target.value }))}
+                  >
+                    <option value="POSTER">Poster</option>
+                    <option value="BROCHURE">Brochure</option>
+                    <option value="MANIFESTO">Manifesto</option>
+                    <option value="VOLUNTEER_FORM">Volunteer Form</option>
+                    <option value="SYMBOL">Symbol</option>
+                    <option value="OTHER">Other</option>
+                  </select>
                 </div>
+                <div className="form-group">
+                  <label>Title</label>
+                  <input
+                    type="text"
+                    value={campaignForm.title}
+                    onChange={(event) => setCampaignForm(prev => ({ ...prev, title: event.target.value }))}
+                    placeholder="Enter a title"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Description</label>
+                  <textarea
+                    rows="4"
+                    value={campaignForm.description}
+                    onChange={(event) => setCampaignForm(prev => ({ ...prev, description: event.target.value }))}
+                    placeholder="Optional details for the material"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>File</label>
+                  <input type="file" onChange={handleCampaignFilePick} />
+                </div>
+              </div>
+              <div className="form-actions">
+                <button
+                  className="btn btn-primary"
+                  onClick={handleCampaignUpload}
+                  disabled={campaignLoading || !campaignElectionId}
+                >
+                  {campaignLoading ? 'Uploading...' : 'Upload Material'}
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  onClick={handleCampaignAnnouncement}
+                  disabled={campaignLoading || !campaignElectionId}
+                >
+                  Post Announcement
+                </button>
               </div>
             </div>
           </div>
 
           <div className="campaign-section">
-            <h4><FaBullhorn /> Announcements</h4>
-            <div className="announcement-creator">
-              <textarea 
-                rows="4" 
-                placeholder="Create an announcement for your supporters..."
-                className="announcement-textarea"
-              ></textarea>
-              <div className="announcement-actions">
-                <button className="btn btn-primary">Post Announcement</button>
-                <button className="btn btn-secondary">Save as Draft</button>
+            <h4><FaClipboardList /> Published Materials</h4>
+            {campaignLoading && campaignMaterials.length === 0 ? (
+              <p>Loading campaign materials...</p>
+            ) : campaignMaterials.length === 0 ? (
+              <p>No campaign materials uploaded yet.</p>
+            ) : (
+              <div className="materials-grid">
+                {campaignMaterials.map((material) => (
+                  <div key={material.id} className="material-card">
+                    <div className="material-card-header">
+                      <h5>{material.title}</h5>
+                      <span className={`status ${(material.isApproved ? 'approved' : 'pending')}`}>
+                        {material.isApproved ? 'Approved' : 'Pending approval'}
+                      </span>
+                    </div>
+                    <p><strong>Type:</strong> {material.materialType}</p>
+                    <p><strong>Uploaded:</strong> {material.uploadDate ? new Date(material.uploadDate).toLocaleString() : 'Unknown'}</p>
+                    {material.description && <p>{material.description}</p>}
+                    {material.rejectionReason && <p><strong>Rejection:</strong> {material.rejectionReason}</p>}
+                    <div className="result-actions">
+                      <button className="btn btn-info" onClick={() => handleCampaignDownload(material)}>
+                        <FaDownload /> Download
+                      </button>
+                      <button className="btn btn-secondary" onClick={() => handleCampaignDelete(material.id)}>
+                        <FaTrash /> Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
-            </div>
-            
-            <div className="announcements-list">
-              <h6>Recent Announcements</h6>
-              <div className="announcement-item">
-                <div className="announcement-content">
-                  <p>"Thank you for your support in the upcoming election. Together, we will build a better future."</p>
-                  <span className="announcement-date">Posted 2 hours ago</span>
-                </div>
-                <div className="announcement-stats">
-                  <span>👁 245 views</span>
-                  <span>❤ 32 likes</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="campaign-section">
-            <h4><FaBullhorn /> Campaign Materials</h4>
-            <div className="materials-grid">
-              <div className="material-upload">
-                <FaImage />
-                <p>Upload Posters</p>
-                <input type="file" accept="image/*" multiple />
-              </div>
-              <div className="material-upload">
-                <FaFileAlt />
-                <p>Upload Brochures</p>
-                <input type="file" accept=".pdf" multiple />
-              </div>
-              <div className="material-upload">
-                <FaUsers />
-                <p>Volunteer Forms</p>
-                <input type="file" accept=".pdf,.doc" multiple />
-              </div>
-            </div>
+            )}
           </div>
         </div>
       </div>
@@ -1047,59 +1729,74 @@ const ParticipantDashboard = ({ user }) => {
   );
 
   // Results Module Component
-  const ResultsModule = () => (
-    <div className="candidate-module">
-      <div className="content-header">
-        <h1 className="content-title">Results & Reports</h1>
-        <p className="content-subtitle">View election results and download reports</p>
-      </div>
-      <div className="module-content">
-        <div className="results-sections">
-          <div className="results-section">
-            <h4><FaChartBar /> Election Results</h4>
-            <div className="results-cards">
-              {enrolledElections.length > 0 ? (
-                enrolledElections.map(election => (
-                  <div key={election.id} className="result-card">
-                    <h5>{election.title}</h5>
-                    <div className="result-status">
-                      <span className={`status ${getElectionStatus(election).toLowerCase()}`}>
-                        {getElectionStatus(election)}
-                      </span>
-                    </div>
-                    <div className="result-stats">
-                      <div className="stat-item">
-                        <label>Position:</label>
-                        <span>2nd</span>
-                      </div>
-                      <div className="stat-item">
-                        <label>Votes:</label>
-                        <span>1,245</span>
-                      </div>
-                      <div className="stat-item">
-                        <label>Vote %:</label>
-                        <span>32.5%</span>
-                      </div>
-                    </div>
-                    <div className="result-actions">
-                      <button className="btn btn-info">
-                        <FaEye /> View Details
-                      </button>
-                      <button className="btn btn-secondary">
-                        <FaDownload /> Download Report
-                      </button>
-                    </div>
+  const ResultsModule = () => {
+    const [results, setResults] = useState([]);
+    const [loadingResults, setLoadingResults] = useState(true);
+
+    useEffect(() => {
+      const token = secureStorage.getToken();
+      fetch(getApiUrl('/api/voter/results'), {
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+      })
+        .then(r => r.ok ? r.json() : [])
+        .then(data => setResults(Array.isArray(data) ? data : []))
+        .catch(() => setResults([]))
+        .finally(() => setLoadingResults(false));
+    }, []);
+
+    // Find this candidate's user id to highlight their row
+    const myUserId = user?.id;
+
+    return (
+      <div className="candidate-module">
+        <div className="content-header">
+          <h1 className="content-title">Results & Reports</h1>
+          <p className="content-subtitle">View election results and your performance</p>
+        </div>
+        <div className="module-content">
+          {loadingResults ? (
+            <p>Loading results...</p>
+          ) : results.length === 0 ? (
+            <p>No published results yet. Results will appear here once the admin publishes them.</p>
+          ) : (
+            <div className="results-sections">
+              {results.map(election => (
+                <div key={election.electionId} className="result-card">
+                  <h5>{election.electionTitle}</h5>
+                  <p>Total Votes: <strong>{election.totalVotes}</strong></p>
+                  <div className="results-cards">
+                    {election.candidateResults && election.candidateResults.map(cr => {
+                      const isMe = cr.candidateId && allElections.some(e =>
+                        e.id === election.electionId &&
+                        (e.participantUserIds || []).includes(myUserId)
+                      ) && candidateApplications.some(a =>
+                        a.electionId === election.electionId && a.status === 'APPROVED'
+                      );
+                      return (
+                        <div key={cr.candidateId} className="result-card" style={cr.isWinner ? {border:'2px solid #28a745'} : {}}>
+                          <h5>{cr.rank === 1 ? '🏆 ' : `#${cr.rank} `}{cr.candidateName}</h5>
+                          {cr.party && cr.party !== 'Independent' && <p>{cr.party}</p>}
+                          <div className="result-stats">
+                            <div className="stat-item"><label>Rank:</label><span>#{cr.rank}</span></div>
+                            <div className="stat-item"><label>Votes:</label><span>{cr.votes}</span></div>
+                            <div className="stat-item"><label>Vote %:</label><span>{cr.percentage}%</span></div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))
-              ) : (
-                <p>No election results available yet.</p>
-              )}
+                </div>
+              ))}
             </div>
-          </div>
+          )}
         </div>
       </div>
-    </div>
-  );
+    );
+  };
+
+  if (!user) {
+    return <div className="participant-dashboard"><div className="loading-message"><p>Loading user data...</p></div></div>;
+  }
 
   // Sidebar navigation
   return (
@@ -1149,13 +1846,78 @@ const ParticipantDashboard = ({ user }) => {
         )}
         
         {activeTab === 'home' && <HomeModule />}
-        {activeTab === 'profile' && <ProfileManagementModule />}
-        {activeTab === 'authentication' && <AuthenticationModule />}
+        {activeTab === 'profile' && (
+          <ProfileManagementStable
+            profile={profile}
+            isProfileEditing={isProfileEditing}
+            profileLoading={profileLoading}
+            profileError={profileError}
+            profileSuccess={profileSuccess}
+            onToggleEdit={() => setIsProfileEditing(!isProfileEditing)}
+            onFieldChange={handleProfileUpdate}
+            onSave={saveProfile}
+            onCancel={() => {
+              setIsProfileEditing(false);
+              setProfileError('');
+              setProfileSuccess('');
+              setProfile({
+                fullName: user?.fullName || '',
+                email: user?.email || '',
+                age: user?.age || '',
+                phoneNumber: user?.phoneNumber || '',
+                idProofNumber: user?.idProofNumber || '',
+                address: user?.address || '',
+                biography: '',
+                partyName: '',
+                partySymbol: ''
+              });
+            }}
+          />
+        )}
+        {activeTab === 'authentication' && (
+          <AuthenticationModuleStable
+            onOpenPasswordModal={() => setShowPasswordModal(true)}
+            authSuccess={passwordSuccess}
+          />
+        )}
         {activeTab === 'elections' && <ElectionParticipationModule />}
-        {activeTab === 'campaign' && <CampaignToolsModule />}
+        {activeTab === 'campaign' && (
+          <CampaignToolsStable
+            user={user}
+            campaignMaterials={campaignMaterials}
+            campaignCandidateId={campaignCandidateId}
+            campaignElectionId={campaignElectionId}
+            campaignLoading={campaignLoading}
+            campaignError={campaignError}
+            campaignSuccess={campaignSuccess}
+            campaignForm={campaignForm}
+            campaignElectionOptions={campaignElectionOptions}
+            selectedCampaignElection={selectedCampaignElection}
+            onElectionChange={setCampaignElectionId}
+            onMaterialTypeChange={(value) => setCampaignForm(prev => ({ ...prev, materialType: value }))}
+            onTitleChange={(value) => setCampaignForm(prev => ({ ...prev, title: value }))}
+            onDescriptionChange={(value) => setCampaignForm(prev => ({ ...prev, description: value }))}
+            onFilePick={handleCampaignFilePick}
+            onRefreshMaterials={loadCampaignMaterials}
+            onUploadMaterial={handleCampaignUpload}
+            onPostAnnouncement={handleCampaignAnnouncement}
+            onDeleteMaterial={handleCampaignDelete}
+            onDownloadMaterial={handleCampaignDownload}
+          />
+        )}
         {activeTab === 'notifications' && <NotificationsModule />}
         {activeTab === 'results' && <ResultsModule />}
       </main>
+      <PasswordChangeModal
+        isOpen={showPasswordModal}
+        isLoading={passwordLoading}
+        error={passwordError}
+        success={passwordSuccess}
+        form={passwordForm}
+        onChange={handlePasswordFieldChange}
+        onClose={() => setShowPasswordModal(false)}
+        onSubmit={handleChangePassword}
+      />
     </div>
   );
 };

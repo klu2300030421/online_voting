@@ -1,12 +1,10 @@
 package com.voterow.backend.dto;
 
 import jakarta.validation.constraints.Email;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 public class UpdateProfileRequest {
     
-    @NotBlank(message = "Full name is required")
     @Size(max = 100, message = "Full name must not exceed 100 characters")
     private String fullName;
     
@@ -20,6 +18,9 @@ public class UpdateProfileRequest {
     
     @Size(max = 500, message = "Address must not exceed 500 characters")
     private String address;
+    
+    @Size(max = 100, message = "Party name must not exceed 100 characters")
+    private String partyName;
     
     // Constructors
     public UpdateProfileRequest() {}
@@ -71,5 +72,13 @@ public class UpdateProfileRequest {
     
     public void setAddress(String address) {
         this.address = address;
+    }
+    
+    public String getPartyName() {
+        return partyName;
+    }
+    
+    public void setPartyName(String partyName) {
+        this.partyName = partyName;
     }
 }

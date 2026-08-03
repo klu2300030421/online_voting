@@ -17,6 +17,8 @@ public interface CandidateRepository extends JpaRepository<Candidate, Long> {
     
     List<Candidate> findByElectionAndIsActiveTrue(Election election);
     
+    List<Candidate> findByElectionAndStatus(Election election, Candidate.CandidateStatus status);
+    
     List<Candidate> findByUser(User user);
     
     List<Candidate> findByStatus(Candidate.CandidateStatus status);
@@ -29,4 +31,13 @@ public interface CandidateRepository extends JpaRepository<Candidate, Long> {
     Long countActiveByElectionId(@Param("electionId") Long electionId);
     
     boolean existsByUserAndElection(User user, Election election);
+    
+    @Query("SELECT c FROM Candidate c WHERE c.user.id = :userId AND c.election.id = :electionId")
+    List<Candidate> findByUserIdAndElectionId(@Param("userId") Long userId, @Param("electionId") Long electionId);
+    
+    @Query("SELECT c FROM Candidate c WHERE c.user.id = :userId")
+    List<Candidate> findByUserId(@Param("userId") Long userId);
+    
+    @Query("SELECT c FROM Candidate c LEFT JOIN FETCH c.user LEFT JOIN FETCH c.election WHERE c.user.id = :userId")
+    List<Candidate> findByUserIdWithDetails(@Param("userId") Long userId);
 }

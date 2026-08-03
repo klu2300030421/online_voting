@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 const Profile = ({ user, onUpdateUser }) => {
   const [fullName, setFullName] = useState(user.fullName);
   const [age, setAge] = useState(user.age);
-  const [email, setEmail] = useState(user.email); // Email is not editable
+  const [email] = useState(user.email); // Email is not editable
   const [message, setMessage] = useState('');
 
   const handleUpdate = (e) => {

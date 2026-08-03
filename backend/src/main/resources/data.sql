@@ -1,0 +1,2 @@
+MERGE INTO users (full_name, email, password, age, user_type, admin_role, is_active, is_verified, two_factor_enabled, created_at, updated_at) 
+VALUES ('Default Admin', 'admin@test.com', '$2a$10$LczMtM4iDTOiUFyeS7DVYOWjPdP9vbUexbXNv.YBQjdrBQLPDhtLa', 30, 'ROLE_ADMIN', 'SUPER_ADMIN', true, true, false, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);

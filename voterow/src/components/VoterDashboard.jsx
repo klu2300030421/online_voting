@@ -1,19 +1,77 @@
 import React, { useState, useEffect } from 'react';
 import { FaHome, FaUser, FaLock, FaVoteYea, FaBell, FaQuestionCircle, FaChartBar, FaIdCard, FaPhone, FaEye, FaTimes, FaCheck } from 'react-icons/fa';
+import { getApiUrl } from '../config/apiConfig';
+import secureStorage from '../utils/secureStorage';
 import './VoterDashboard.css';
 
-const VoterDashboard = ({ user }) => {
-  // Guard clause for undefined user
-  if (!user) {
-    return (
-      <div className="voter-dashboard">
-        <div className="loading-message">
-          <p>Loading user data...</p>
-        </div>
-      </div>
-    );
-  }
+function VoterResultsTab({ elections, hasVoted }) {
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(true);
 
+  useEffect(() => {
+    const token = secureStorage.getToken();
+    fetch(getApiUrl('/api/voter/results'), {
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+    })
+      .then(r => r.ok ? r.json() : [])
+      .then(data => setResults(Array.isArray(data) ? data : []))
+      .catch(() => setResults([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div className="module-content"><h2>Election Results</h2><p>Loading results...</p></div>;
+
+  return (
+    <div className="module-content">
+      <h2>Election Results</h2>
+      <div className="results-section">
+        {results.length === 0 ? (
+          <div className="no-results">
+            <FaChartBar className="no-data-icon" />
+            <p>No published results yet. Results will appear here once the admin publishes them.</p>
+          </div>
+        ) : (
+          results.map(election => (
+            <div key={election.electionId} className="result-card">
+              <div className="result-header">
+                <h3>{election.electionTitle}</h3>
+                <span className="completion-date">Total Votes: {election.totalVotes}</span>
+              </div>
+              <div className="result-content">
+                <div className="candidate-results">
+                  <h4>Results</h4>
+                  {election.candidateResults && election.candidateResults.length > 0 ? (
+                    election.candidateResults.map(cr => (
+                      <div key={cr.candidateId} className="candidate-result" style={cr.isWinner ? {background:'#e6ffe6', borderRadius:'6px', padding:'4px'} : {}}>
+                        <div className="candidate-info">
+                          <span className="name">
+                            {cr.rank === 1 ? '🏆 ' : `#${cr.rank} `}{cr.candidateName}
+                            {cr.party && cr.party !== 'Independent' ? ` (${cr.party})` : ''}
+                          </span>
+                          <span className="votes">{cr.votes} votes ({cr.percentage}%)</span>
+                        </div>
+                        <div className="vote-bar">
+                          <div className="vote-fill" style={{width: `${cr.percentage}%`}}></div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p>No votes recorded.</p>
+                  )}
+                </div>
+                {elections.find(e => e.id === election.electionId) && hasVoted(elections.find(e => e.id === election.electionId)) && (
+                  <div className="my-vote"><p><FaCheck className="voted-icon" /> You participated in this election</p></div>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+const VoterDashboard = ({ user }) => {
   const [activeTab, setActiveTab] = useState('home');
   const [elections, setElections] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
@@ -35,6 +93,10 @@ const VoterDashboard = ({ user }) => {
   const [profileSuccess, setProfileSuccess] = useState('');
   const [supportTickets, setSupportTickets] = useState([]);
   const [newTicket, setNewTicket] = useState({ subject: '', message: '' });
+  const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
+  const [passwordSuccess, setPasswordSuccess] = useState('');
 
   // Update profile when user prop changes - memoized to prevent unnecessary updates
   useEffect(() => {
@@ -71,15 +133,18 @@ const VoterDashboard = ({ user }) => {
 
   // A single function to determine the status of an election
   const getElectionStatus = (election) => {
-    // Handle admin-created elections with status field
     if (election.status) {
       switch (election.status.toUpperCase()) {
+        case 'ACTIVE':
         case 'ONGOING':
           return 'Active';
         case 'SCHEDULED':
           return 'Upcoming';
         case 'COMPLETED':
+        case 'RESULTS_PUBLISHED':
           return 'Completed';
+        case 'DRAFT':
+          return 'Draft';
         default:
           return election.status;
       }
@@ -101,85 +166,117 @@ const VoterDashboard = ({ user }) => {
     
     const fetchElectionsFromBackend = async () => {
       try {
-        console.log('VoterDashboard: Fetching elections from admin database...');
-        const response = await fetch('http://localhost:8081/api/admin/elections', {
+        console.log('VoterDashboard: Fetching elections from backend...');
+        // Get JWT token
+        const token = secureStorage.getToken();
+        
+        // Try voter endpoint first (requires auth), then fall back to participant endpoint (public)
+        let response = await fetch(getApiUrl('/api/voter/elections'), {
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',
-            'Cache-Control': 'no-cache'
+            'Cache-Control': 'no-cache',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
           }
         });
+        
+        // If voter endpoint fails, try participant endpoint
+        if (!response.ok) {
+          console.log('VoterDashboard: Voter endpoint not available, trying participant endpoint...');
+          response = await fetch(getApiUrl('/api/participant/elections'), {
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-cache',
+              ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+            }
+          });
+        }
         
         if (response.ok) {
           const backendElections = await response.json();
           console.log('VoterDashboard: Successfully fetched elections from admin database:', backendElections);
-          setElections(backendElections);
-          localStorage.setItem('voterow_elections', JSON.stringify(backendElections));
+          // Enrich with vote-status per election
+          try {
+            const enriched = await Promise.all(
+              backendElections.map(async (e) => {
+                try {
+                  const r = await fetch(getApiUrl(`/api/voting/check/${currentUserId}/${e.id}`), {
+                    headers: secureStorage.getToken()
+                      ? { Authorization: `Bearer ${secureStorage.getToken()}` }
+                      : {}
+                  });
+                  if (r.ok) {
+                    const j = await r.json();
+                    return { ...e, hasVoted: Boolean(j.hasVoted) };
+                  }
+                } catch {
+                  // A transient status lookup failure should not hide the election.
+                }
+                return { ...e, hasVoted: false };
+              })
+            );
+            setElections(enriched);
+          } catch (enrichErr) {
+            console.warn('VoterDashboard: Failed enriching elections with vote status', enrichErr);
+            setElections(backendElections);
+          }
         } else {
           console.error('VoterDashboard: Failed to fetch from admin database, status:', response.status);
-          const allElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
-          console.log('VoterDashboard: Using admin elections from localStorage:', allElections);
-          setElections(allElections);
+          setElections([]);
         }
       } catch (error) {
         console.error('VoterDashboard: Error connecting to admin database:', error);
-        const allElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
-        console.log('VoterDashboard: Using admin elections from localStorage after error:', allElections);
-        setElections(allElections);
+        setElections([]);
       }
     };
 
-    // Clear any old localStorage keys that might conflict
-    localStorage.removeItem('voter_elections');
-    localStorage.removeItem('user_elections');
+    // Backend-only mode - no localStorage operations
     
     // Load elections from database only
     fetchElectionsFromBackend();
     
-    // Refresh elections every 5 seconds from database
-    const interval = setInterval(fetchElectionsFromBackend, 5000);
+    // Refresh elections every 30 seconds from database
+    const interval = setInterval(fetchElectionsFromBackend, 30000);
 
-    const users = JSON.parse(localStorage.getItem('voterow_users')) || [];
-    setAllUsers(users);
+    // Users will be fetched from backend when needed
+    setAllUsers([]);
 
-    // Load candidates from database
+    // Load candidates from database - fetch from proper Candidate table
     const fetchCandidatesFromDatabase = async () => {
       try {
-        console.log('VoterDashboard: Fetching candidates from database');
+        console.log('VoterDashboard: Fetching approved candidates from database');
         
-        const response = await fetch('http://localhost:8081/api/admin/candidates');
-        if (!response.ok) {
-          throw new Error('Failed to fetch candidates from database');
+        const token = secureStorage.getToken();
+        const candidatesResponse = await fetch(getApiUrl('/api/voter/candidates'), {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          }
+        });
+        
+        let allApprovedCandidates = [];
+        
+        if (candidatesResponse.ok) {
+          allApprovedCandidates = await candidatesResponse.json();
         }
         
-        const candidates = await response.json();
-        console.log('VoterDashboard: Fetched candidates from database:', candidates.length);
-        
-        // Only include APPROVED candidates for voting
-        const approvedCandidates = candidates.filter(candidate => 
-          candidate.status === 'APPROVED'
-        );
-        
-        console.log('VoterDashboard: Approved candidates available for voting:', approvedCandidates.length);
-        setAllCandidates(approvedCandidates);
+        console.log('VoterDashboard: Found approved candidates:', allApprovedCandidates.length);
+        setAllCandidates(allApprovedCandidates);
         
       } catch (error) {
         console.error('VoterDashboard: Error fetching candidates from database:', error);
-        
-        // Fallback to localStorage
-        console.log('VoterDashboard: Falling back to localStorage');
-        const candidates = JSON.parse(localStorage.getItem('voterow_candidates')) || [];
-        setAllCandidates(candidates);
+        setAllCandidates([]);
       }
     };
     
     fetchCandidatesFromDatabase();
 
-    const savedNotifications = JSON.parse(localStorage.getItem('voter_notifications_' + user.id)) || [];
-    setNotifications(savedNotifications);
-
-    const savedTickets = JSON.parse(localStorage.getItem('support_tickets_' + user.id)) || [];
-    setSupportTickets(savedTickets);
+    // Notifications and tickets will be fetched from backend
+    setNotifications([]);
+    setSupportTickets([]);
 
     return () => clearInterval(interval);
   }, [user?.id]);
@@ -236,9 +333,8 @@ const VoterDashboard = ({ user }) => {
     });
 
     if (newNotifications.length > 0) {
-      const updatedNotifications = [...notifications, ...newNotifications];
-      setNotifications(updatedNotifications);
-      localStorage.setItem('voter_notifications_' + user.id, JSON.stringify(updatedNotifications));
+      setNotifications(prev => [...prev, ...newNotifications]);
+      // TODO: Save notifications to backend
     }
   };
 
@@ -247,75 +343,51 @@ const VoterDashboard = ({ user }) => {
     setShowModal(true);
   };
 
-  const handleVote = (candidateId) => {
+  const handleVote = async (candidateId) => {
     if (!selectedElection || !user?.id) {
       console.error('Missing selectedElection or user.id');
       return;
     }
 
-    console.log('Attempting to vote:', {
-      electionId: selectedElection.id,
-      candidateId,
-      userId: user.id,
-      electionStatus: selectedElection.status
-    });
-
-    // Check if user has already voted (prevent double voting)
-    if (hasVoted(selectedElection)) {
-      alert('You have already voted in this election!');
-      return;
-    }
-
-    // Check if election is still active - allow voting if ONGOING or has participants
-    if (selectedElection.status && selectedElection.status !== 'ONGOING' && selectedElection.participants?.length === 0) {
-      alert('This election is not currently active for voting!');
-      return;
-    }
-
-    const allElections = JSON.parse(localStorage.getItem('voterow_elections')) || [];
-    const electionIndex = allElections.findIndex(e => e.id === selectedElection.id);
-    
-    if (electionIndex !== -1) {
-      const electionToUpdate = allElections[electionIndex];
-      
-      if (!electionToUpdate.votes) {
-        electionToUpdate.votes = {};
-      }
-      
-      // Record the vote (one vote per user)
-      electionToUpdate.votes[user.id] = candidateId;
-      
-      // Update the election in the array
-      allElections[electionIndex] = electionToUpdate;
-      
-      console.log('Vote recorded:', {
-        electionId: electionToUpdate.id,
-        totalVotes: Object.keys(electionToUpdate.votes).length,
-        userVote: electionToUpdate.votes[user.id]
+    try {
+      const response = await fetch(getApiUrl('/api/voting/cast'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(secureStorage.getToken() ? { Authorization: `Bearer ${secureStorage.getToken()}` } : {})
+        },
+        body: JSON.stringify({
+          voterId: user.id,
+          candidateId: candidateId,
+          electionId: selectedElection.id
+        })
       });
-      
-      localStorage.setItem('voterow_elections', JSON.stringify(allElections));
-      setElections(allElections);
 
-      alert('Your vote has been cast successfully!');
-      setShowModal(false);
-      setSelectedElection(null);
-    } else {
-      console.error('Election not found for voting');
-      alert('Error: Election not found. Please refresh and try again.');
+      const contentType = response.headers.get('content-type') || '';
+      const result = contentType.includes('application/json')
+        ? await response.json()
+        : { message: await response.text() };
+      
+      if (response.ok && result.success) {
+        alert('Your vote has been cast successfully!');
+        setShowModal(false);
+        setSelectedElection(null);
+        setElections(current => current.map(election =>
+          election.id === selectedElection.id ? { ...election, hasVoted: true } : election
+        ));
+      } else {
+        alert(result.error || result.message || 'Failed to cast vote');
+      }
+    } catch (error) {
+      console.error('Error casting vote:', error);
+      alert('Error casting vote. Please try again.');
     }
   };
 
   const hasVoted = (election) => {
-    if (!user?.id || !election?.votes) return false;
-    const voted = !!election.votes[user.id];
-    console.log('Checking if user has voted:', {
-      userId: user.id,
-      electionId: election.id,
-      hasVoted: voted,
-      totalVotes: Object.keys(election.votes).length
-    });
-    return voted;
+    // Defer to server-verified flag placed on election by fetchElectionsFromBackend
+    // Fallback to false if not present
+    return Boolean(election?.hasVoted);
   };
   
   const getParticipantName = (id) => {
@@ -341,10 +413,11 @@ const VoterDashboard = ({ user }) => {
     setProfileSuccess('');
     
     try {
-      const response = await fetch(`http://localhost:8081/api/auth/profile?email=${encodeURIComponent(user.email)}`, {
+      const response = await fetch(getApiUrl('/api/auth/profile'), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
+          ...(secureStorage.getToken() ? { Authorization: `Bearer ${secureStorage.getToken()}` } : {}),
         },
         body: JSON.stringify({
           fullName: profile.fullName,
@@ -369,14 +442,14 @@ const VoterDashboard = ({ user }) => {
         setIsProfileEditing(false);
         
         // Update parent component user data if possible
-        if (window.updateUserProfile) {
-          window.updateUserProfile(updatedUser);
+        if (window.__voterowUpdateUser) {
+          window.__voterowUpdateUser(updatedUser);
         }
       } else {
         const errorText = await response.text();
         setProfileError(errorText || 'Failed to update profile');
       }
-    } catch (err) {
+    } catch {
       setProfileError('Network error. Please try again.');
     } finally {
       setProfileLoading(false);
@@ -395,19 +468,17 @@ const VoterDashboard = ({ user }) => {
       userId: user.id
     };
 
-    const updatedTickets = [...supportTickets, ticket];
-    setSupportTickets(updatedTickets);
-    localStorage.setItem('support_tickets_' + user.id, JSON.stringify(updatedTickets));
+    setSupportTickets(prev => [...prev, ticket]);
     setNewTicket({ subject: '', message: '' });
+    // TODO: Submit ticket to backend
     alert('Support ticket submitted successfully!');
   };
 
   const markNotificationAsRead = (notificationId) => {
-    const updatedNotifications = notifications.map(n => 
+    setNotifications(prev => prev.map(n => 
       n.id === notificationId ? { ...n, read: true } : n
-    );
-    setNotifications(updatedNotifications);
-    localStorage.setItem('voter_notifications_' + user.id, JSON.stringify(updatedNotifications));
+    ));
+    // TODO: Update notification status in backend
   };
 
   const isEligibleVoter = () => {
@@ -418,26 +489,23 @@ const VoterDashboard = ({ user }) => {
   const renderVoteButton = (election) => {
     const status = getElectionStatus(election);
     
-    console.log('Rendering vote button for election:', {
-      id: election.id,
-      title: election.title,
-      status: election.status,
-      computedStatus: status,
-      participants: election.participants?.length || 0,
-      hasVoted: hasVoted(election)
-    });
-    
     // Check if user has already voted (one vote per voter)
     if (hasVoted(election)) {
       return <button className="btn btn-secondary" disabled>Already Voted</button>;
     }
     
-    // Allow voting if election is ACTIVE/ONGOING or has participants assigned
-    if (election.status === 'ONGOING' || election.status === 'ACTIVE' || status === 'Active' || (election.participants && election.participants.length > 0)) {
-      // Check if there are assigned participants
-      if (!election.participants || election.participants.length === 0) {
-        return <button className="btn btn-secondary" disabled>No Candidates Assigned</button>;
-      }
+    // CRITICAL: Must have approved candidates assigned before allowing voting
+    const approvedCandidatesForElection = allCandidates.filter(candidate => 
+      candidate.electionId === election.id || 
+      (election.participants && election.participants.includes(candidate.id))
+    );
+    
+    if (approvedCandidatesForElection.length === 0) {
+      return <button className="btn btn-secondary" disabled>No Candidates Available</button>;
+    }
+    
+    // Election status check
+    if (election.status === 'ONGOING' || election.status === 'ACTIVE' || status === 'Active') {
       return <button className="btn btn-primary" onClick={() => openVoteModal(election)}>Vote Now</button>;
     } else if (status === 'Upcoming' || election.status === 'SCHEDULED') {
       return <button className="btn btn-secondary" disabled>Election Not Started</button>;
@@ -510,21 +578,60 @@ const VoterDashboard = ({ user }) => {
               </div>
               
               <div className="security-settings">
-                <h3><FaLock className="module-icon" /> Security Settings</h3>
-                <div className="security-options">
-                  <div className="security-item">
-                    <label>Two-Factor Authentication</label>
-                    <button className="btn btn-primary">Enable 2FA</button>
+                <h3><FaLock className="module-icon" /> Change Password</h3>
+                {passwordError && <div className="alert alert-error">{passwordError}</div>}
+                {passwordSuccess && <div className="alert alert-success">{passwordSuccess}</div>}
+                <div className="form-grid">
+                  <div className="form-group">
+                    <label>Current Password</label>
+                    <input type="password" value={passwordForm.currentPassword}
+                      onChange={e => setPasswordForm(p => ({ ...p, currentPassword: e.target.value }))}
+                      placeholder="Enter current password" />
                   </div>
-                  <div className="security-item">
-                    <label>Email Notifications</label>
-                    <button className="btn btn-secondary">Configure</button>
+                  <div className="form-group">
+                    <label>New Password</label>
+                    <input type="password" value={passwordForm.newPassword}
+                      onChange={e => setPasswordForm(p => ({ ...p, newPassword: e.target.value }))}
+                      placeholder="Enter new password" />
                   </div>
-                  <div className="security-item">
-                    <label>Login History</label>
-                    <button className="btn btn-info">View History</button>
+                  <div className="form-group">
+                    <label>Confirm New Password</label>
+                    <input type="password" value={passwordForm.confirmPassword}
+                      onChange={e => setPasswordForm(p => ({ ...p, confirmPassword: e.target.value }))}
+                      placeholder="Confirm new password" />
                   </div>
                 </div>
+                <button className="btn btn-primary" disabled={passwordLoading}
+                  onClick={async () => {
+                    setPasswordError(''); setPasswordSuccess('');
+                    if (!passwordForm.currentPassword || !passwordForm.newPassword) {
+                      return setPasswordError('All fields are required.');
+                    }
+                    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+                      return setPasswordError('New passwords do not match.');
+                    }
+                    if (passwordForm.newPassword.length < 8) {
+                      return setPasswordError('New password must be at least 8 characters.');
+                    }
+                    setPasswordLoading(true);
+                    try {
+                      const res = await fetch(getApiUrl('/api/auth/change-password'), {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json', ...(secureStorage.getToken() ? { Authorization: `Bearer ${secureStorage.getToken()}` } : {}) },
+                        body: JSON.stringify({ currentPassword: passwordForm.currentPassword, newPassword: passwordForm.newPassword, confirmPassword: passwordForm.confirmPassword })
+                      });
+                      if (res.ok) {
+                        setPasswordSuccess('Password changed successfully!');
+                        setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+                      } else {
+                        const msg = await res.text();
+                        setPasswordError(msg || 'Failed to change password.');
+                      }
+                    } catch { setPasswordError('Network error. Please try again.'); }
+                    finally { setPasswordLoading(false); }
+                  }}>
+                  {passwordLoading ? 'Updating...' : 'Update Password'}
+                </button>
               </div>
             </div>
           </div>
@@ -669,6 +776,7 @@ const VoterDashboard = ({ user }) => {
         return (
           <div className="module-content">
             <h2>Voting Interface</h2>
+
             <div className="voting-section">
               <div className="elections-grid">
                 {elections.length > 0 ? (
@@ -685,27 +793,18 @@ const VoterDashboard = ({ user }) => {
                         <p><strong>Ends:</strong> {new Date(election.endDate).toLocaleString()}</p>
                         <p><strong>Candidates:</strong> {(election.participants || []).length}</p>
                         
-                        {(election.participants && election.participants.length > 0) ? (
-                          <div className="candidate-preview">
-                            <h4>Candidates:</h4>
-                            {election.participants.slice(0, 3).map(participantId => {
-                              const candidateName = getParticipantName(participantId);
-                              return (
-                                <span key={participantId} className="candidate-tag">
-                                  {candidateName}
-                                </span>
-                              );
-                            })}
-                            {election.participants.length > 3 && 
-                              <span className="candidate-tag more">+{election.participants.length - 3} more</span>
-                            }
-                          </div>
-                        ) : (
-                          <div className="candidate-preview">
-                            <h4>Candidates:</h4>
+                        <div className="candidate-preview">
+                          <h4>Candidates:</h4>
+                          {allCandidates.filter(c => c.electionId === election.id || (election.participants && election.participants.includes(c.id))).length > 0 ? (
+                            allCandidates.filter(c => c.electionId === election.id || (election.participants && election.participants.includes(c.id))).slice(0, 3).map(candidate => (
+                              <span key={candidate.id} className="candidate-tag">
+                                {candidate.name}
+                              </span>
+                            ))
+                          ) : (
                             <p className="no-candidates">Candidates will be announced soon</p>
-                          </div>
-                        )}
+                          )}
+                        </div>
                         
                         <div className="voting-actions">
                           {hasVoted(election) ? (
@@ -723,7 +822,15 @@ const VoterDashboard = ({ user }) => {
                 ) : (
                   <div className="no-elections">
                     <FaVoteYea className="no-data-icon" />
-                    <p>You are not eligible for any elections at this time.</p>
+                    {allCandidates.length > 0 ? (
+                      <div>
+                        <p>Elections are available but candidates haven't been assigned yet.</p>
+                        <p>There are {allCandidates.length} approved candidates waiting to be assigned to elections.</p>
+                        <p>Please contact the administrator to assign candidates to elections.</p>
+                      </div>
+                    ) : (
+                      <p>You are not eligible for any elections at this time.</p>
+                    )}
                   </div>
                 )}
               </div>
@@ -850,86 +957,16 @@ const VoterDashboard = ({ user }) => {
         );
 
       case 'results':
-        return (
-          <div className="module-content">
-            <h2>Election Results</h2>
-            <div className="results-section">
-              <div className="completed-elections">
-                {elections.filter(e => getElectionStatus(e) === 'Completed').length > 0 ? (
-                  elections.filter(e => getElectionStatus(e) === 'Completed').map(election => (
-                    <div key={election.id} className="result-card">
-                      <div className="result-header">
-                        <h3>{election.title}</h3>
-                        <span className="completion-date">
-                          Completed: {new Date(election.endDate).toLocaleDateString()}
-                        </span>
-                      </div>
-                      <div className="result-content">
-                        <div className="participation-stats">
-                          <h4>Participation Statistics</h4>
-                          <div className="stats-grid">
-                            <div className="stat">
-                              <span className="value">{(election.voters || []).length}</span>
-                              <span className="label">Eligible Voters</span>
-                            </div>
-                            <div className="stat">
-                              <span className="value">{Object.keys(election.votes || {}).length}</span>
-                              <span className="label">Votes Cast</span>
-                            </div>
-                            <div className="stat">
-                              <span className="value">
-                                {election.voters && election.voters.length > 0 ? 
-                                  ((Object.keys(election.votes || {}).length / election.voters.length) * 100).toFixed(1) : 
-                                  '0.0'}%
-                              </span>
-                              <span className="label">Turnout</span>
-                            </div>
-                          </div>
-                        </div>
-                        
-                        <div className="candidate-results">
-                          <h4>Results</h4>
-                          {(election.participants || []).map(participantId => {
-                            const votes = Object.values(election.votes || {}).filter(vote => vote === participantId).length;
-                            const totalVotes = Object.keys(election.votes || {}).length;
-                            const percentage = totalVotes > 0 ? (votes / totalVotes) * 100 : 0;
-                            return (
-                              <div key={participantId} className="candidate-result">
-                                <div className="candidate-info">
-                                  <span className="name">{getParticipantName(participantId)}</span>
-                                  <span className="votes">{votes} votes ({percentage.toFixed(1)}%)</span>
-                                </div>
-                                <div className="vote-bar">
-                                  <div className="vote-fill" style={{width: `${percentage}%`}}></div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                        
-                        {hasVoted(election) && (
-                          <div className="my-vote">
-                            <p><FaCheck className="voted-icon" /> You participated in this election</p>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="no-results">
-                    <FaChartBar className="no-data-icon" />
-                    <p>No completed elections to display results for.</p>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        );
+        return <VoterResultsTab elections={elections} hasVoted={hasVoted} />;
 
       default:
         return <div>Module not found</div>;
     }
   };
+
+  if (!user) {
+    return <div className="voter-dashboard"><div className="loading-message"><p>Loading user data...</p></div></div>;
+  }
 
   return (
     <div className="voter-dashboard">
@@ -978,31 +1015,28 @@ const VoterDashboard = ({ user }) => {
                 </div>
               </div>
               <div className="candidate-voting-list">
-                {selectedElection.participants && selectedElection.participants.length > 0 ? (
-                  selectedElection.participants.map(participantId => {
-                    const candidateName = getParticipantName(participantId);
-                    const candidate = allCandidates.find(c => c.id === participantId);
-                    return (
-                      <div key={participantId} className="candidate-voting-card">
-                        <div className="candidate-details">
-                          <h4>{candidateName}</h4>
-                          <p>{candidate?.party ? `Party: ${candidate.party}` : 'Independent'}</p>
-                          <p>Click to vote for this candidate</p>
-                        </div>
-                        <button
-                          className="vote-btn"
-                          onClick={() => handleVote(participantId)}
-                        >
-                          <FaVoteYea /> Cast Vote
-                        </button>
+                {allCandidates.filter(c => c.electionId === selectedElection.id || (selectedElection.participants && selectedElection.participants.includes(c.id))).length > 0 ? (
+                  allCandidates.filter(c => c.electionId === selectedElection.id || (selectedElection.participants && selectedElection.participants.includes(c.id))).map(candidate => (
+                    <div key={candidate.id} className="candidate-voting-card">
+                      <div className="candidate-details">
+                        <h4>{candidate.name}</h4>
+                        <p>{candidate.party ? `Party: ${candidate.party}` : 'Independent'}</p>
+                        <p>Click to vote for this candidate</p>
                       </div>
-                    );
-                  })
+                      <button
+                        className="vote-btn"
+                        onClick={() => handleVote(candidate.id)}
+                      >
+                        <FaVoteYea /> Cast Vote
+                      </button>
+                    </div>
+                  ))
                 ) : (
                   <div className="no-candidates-modal">
                     <p>No candidates are assigned to this election yet.</p>
                   </div>
-                )}
+                )
+                }
               </div>
             </div>
           </div>

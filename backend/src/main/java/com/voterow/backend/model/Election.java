@@ -55,13 +55,13 @@ public class Election {
     private User createdBy;
 
     @ManyToMany(fetch = FetchType.LAZY)
-    @JoinTable(name = "election_voters",
+    @JoinTable(name = "election_voter_users",
             joinColumns = @JoinColumn(name = "election_id"),
             inverseJoinColumns = @JoinColumn(name = "user_id"))
     private Set<User> voters = new HashSet<>();
 
     @ManyToMany(fetch = FetchType.LAZY)
-    @JoinTable(name = "election_participants",
+    @JoinTable(name = "election_participant_users",
             joinColumns = @JoinColumn(name = "election_id"),
             inverseJoinColumns = @JoinColumn(name = "user_id"))
     private Set<User> participants = new HashSet<>();
